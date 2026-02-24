@@ -32,5 +32,6 @@ jobs:
         uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
         with:
           category: integration
-          # Remove this 'ignore' key when you have added brand images for your custom integration to https://github.com/home-assistant/brands
-          ignore: brands
+          # Remove 'brands' from ignore when brand images have been added to https://github.com/home-assistant/brands
+          # Remove 'topics' from ignore after setting repository topics (e.g. home-assistant, hacs) in repository settings
+          ignore: brands topics
