@@ -19,9 +19,7 @@ https://developers.home-assistant.io/docs/config_entries_config_flow_handler
 
 from __future__ import annotations
 
-from custom_components.lixil_shutter.config_flow_handler.config_flow import (
-    LixilShutterConfigFlowHandler,
-)
+from custom_components.lixil_shutter.config_flow_handler.config_flow import LixilShutterConfigFlowHandler
 from custom_components.lixil_shutter.config_flow_handler.options_flow import LixilShutterOptionsFlow
 
 # Re-export for backwards compatibility and external imports
