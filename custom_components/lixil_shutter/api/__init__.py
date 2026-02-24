@@ -2,31 +2,18 @@
 API package for lixil_shutter.
 
 Architecture:
-    Three-layer data flow: Entities → Coordinator → API Client.
-    Only the coordinator should call the API client. Entities must never
-    import or call the API client directly.
+    BLE client for direct communication with LIXIL shutter.
+    Entities access the client via entry.runtime_data.client.
 
 Exception hierarchy:
-    LixilShutterApiClientError (base)
-    ├── LixilShutterApiClientCommunicationError (network/timeout)
-    └── LixilShutterApiClientAuthenticationError (401/403)
-
-Coordinator exception mapping:
-    ApiClientAuthenticationError → ConfigEntryAuthFailed (triggers reauth)
-    ApiClientCommunicationError → UpdateFailed (auto-retry)
-    ApiClientError             → UpdateFailed (auto-retry)
+    LixilShutterBleClientError (base)
+    └── LixilShutterBleClientCommunicationError (GATT / connection errors)
 """
 
-from .client import (
-    LixilShutterApiClient,
-    LixilShutterApiClientAuthenticationError,
-    LixilShutterApiClientCommunicationError,
-    LixilShutterApiClientError,
-)
+from .client import LixilShutterBleClient, LixilShutterBleClientCommunicationError, LixilShutterBleClientError
 
 __all__ = [
-    "LixilShutterApiClient",
-    "LixilShutterApiClientAuthenticationError",
-    "LixilShutterApiClientCommunicationError",
-    "LixilShutterApiClientError",
+    "LixilShutterBleClient",
+    "LixilShutterBleClientCommunicationError",
+    "LixilShutterBleClientError",
 ]

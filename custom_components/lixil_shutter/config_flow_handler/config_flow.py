@@ -1,241 +1,298 @@
 """
-Config flow for lixil_shutter.
+Config flow for LIXIL Bluetooth Shutter.
 
-This module implements the main configuration flow including:
-- Initial user setup
-- Reconfiguration of existing entries
-- Reauthentication flow
+Supports two registration paths:
+1. **Automatic** — HA discovers the shutter via the SERVICE_UUID declared in
+   manifest.json and calls async_step_bluetooth().
+2. **Manual** — user opens "Add Integration" in Settings and searches for
+   "Lixil Bluetooth Shutter". async_step_user() scans for nearby devices.
 
-For more information:
-https://developers.home-assistant.io/docs/config_entries_config_flow_handler
+Pairing sequence:
+  Step 1  confirm  — Show device info, ask user to confirm.
+  Step 2  pair     — Prompt user to put device into pairing mode (hold remote
+                     pairing button 5–10 s) then execute BLE bonding +
+                     PAIR_ACTIONS sequence.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
-from slugify import slugify
+import voluptuous as vol
 
-from custom_components.lixil_shutter.config_flow_handler.schemas import (
-    get_reauth_schema,
-    get_reconfigure_schema,
-    get_user_schema,
+from custom_components.lixil_shutter.api import LixilShutterBleClient, LixilShutterBleClientCommunicationError
+from custom_components.lixil_shutter.const import (
+    CONF_ADDRESS,
+    CONF_PRODUCTION_INFO,
+    DOMAIN,
+    LOGGER,
+    MANUFACTURER_ID,
+    PRODUCTION_INFO,
 )
-from custom_components.lixil_shutter.config_flow_handler.validators import validate_credentials
-from custom_components.lixil_shutter.const import DOMAIN, LOGGER
 from homeassistant import config_entries
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-
-if TYPE_CHECKING:
-    from custom_components.lixil_shutter.config_flow_handler.options_flow import LixilShutterOptionsFlow
-
-# Map exception types to error keys for user-facing messages
-ERROR_MAP = {
-    "LixilShutterApiClientAuthenticationError": "auth",
-    "LixilShutterApiClientCommunicationError": "connection",
-}
+from homeassistant.components.bluetooth import BluetoothServiceInfoBleak, async_discovered_service_info
 
 
 class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     """
-    Handle a config flow for lixil_shutter.
-
-    This class manages the configuration flow for the integration, including
-    initial setup, reconfiguration, and reauthentication.
+    Config flow handler for LIXIL Bluetooth Shutter.
 
     Supported flows:
-    - user: Initial setup via UI
-    - reconfigure: Update existing configuration
-    - reauth: Handle expired credentials
+    - bluetooth: Automatic discovery via manifest.json SERVICE_UUID
+    - user: Manual setup
 
-    For more details:
+    For details:
     https://developers.home-assistant.io/docs/config_entries_config_flow_handler
     """
 
     VERSION = 1
 
-    @staticmethod
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> LixilShutterOptionsFlow:
+    def __init__(self) -> None:
+        """Initialise the flow state."""
+        self._discovery_info: BluetoothServiceInfoBleak | None = None
+        self._discovered_devices: dict[str, BluetoothServiceInfoBleak] = {}
+        self._manual_address: str = ""
+
+    # ------------------------------------------------------------------
+    # Automatic BLE discovery (manifest.json bluetooth service_uuid)
+    # ------------------------------------------------------------------
+
+    async def async_step_bluetooth(
+        self,
+        discovery_info: BluetoothServiceInfoBleak,
+    ) -> config_entries.ConfigFlowResult:
         """
-        Get the options flow for this handler.
+        Handle automatic Bluetooth discovery.
+
+        Called by HA when a device advertising our SERVICE_UUID is detected.
+        Sets unique ID (BLE address) and forwards to confirm step.
+
+        Args:
+            discovery_info: Discovered BLE device info from HA scanner.
 
         Returns:
-            The options flow instance for modifying integration options.
-
+            Config flow result — confirm form or abort if already configured.
         """
-        from custom_components.lixil_shutter.config_flow_handler.options_flow import (  # noqa: PLC0415
-            LixilShutterOptionsFlow,
-        )
+        await self.async_set_unique_id(discovery_info.address)
+        self._abort_if_unique_id_configured()
 
-        return LixilShutterOptionsFlow()
+        self._discovery_info = discovery_info
+        self.context["title_placeholders"] = {
+            "name": discovery_info.name or discovery_info.address,
+            "address": discovery_info.address,
+        }
+        return await self.async_step_confirm()
+
+    # ------------------------------------------------------------------
+    # Manual setup
+    # ------------------------------------------------------------------
 
     async def async_step_user(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> config_entries.ConfigFlowResult:
         """
-        Handle a flow initialized by the user.
+        Handle manual setup initiated by the user.
 
-        This is the entry point when a user adds the integration from the UI.
+        Scans for unconfigured LIXIL shutter devices in range and shows
+        a selector.  If none are found the user can enter an address manually.
 
         Args:
-            user_input: The user input from the config flow form, or None for initial display.
+            user_input: Selected address, or None for initial display.
 
         Returns:
-            The config flow result, either showing a form or creating an entry.
-
+            Config flow result — device selector form or confirm step.
         """
+        # Collect already-configured addresses so we can filter them out
+        configured_addresses = {
+            e.data.get(CONF_ADDRESS) for e in self.hass.config_entries.async_entries(DOMAIN) if CONF_ADDRESS in e.data
+        }
+
+        # Gather discovered LIXIL devices from HA BLE scanner cache
+        for service_info in async_discovered_service_info(self.hass, connectable=True):
+            if service_info.address not in configured_addresses:
+                self._discovered_devices[service_info.address] = service_info
+
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            try:
-                await validate_credentials(
-                    self.hass,
-                    username=user_input[CONF_USERNAME],
-                    password=user_input[CONF_PASSWORD],
-                )
-            except Exception as exception:  # noqa: BLE001
-                errors["base"] = self._map_exception_to_error(exception)
+            address = user_input[CONF_ADDRESS]
+            if address in self._discovered_devices:
+                self._discovery_info = self._discovered_devices[address]
             else:
-                # Set unique ID based on username
-                # NOTE: This is just an example - use a proper unique ID in production
-                # See: https://developers.home-assistant.io/docs/config_entries_config_flow_handler#unique-ids
-                await self.async_set_unique_id(slugify(user_input[CONF_USERNAME]))
-                self._abort_if_unique_id_configured()
+                # User typed an address manually
+                self._discovery_info = None
+                self._manual_address = address
 
-                return self.async_create_entry(
-                    title=user_input[CONF_USERNAME],
-                    data=user_input,
-                )
+            await self.async_set_unique_id(address)
+            self._abort_if_unique_id_configured()
 
-        return self.async_show_form(
-            step_id="user",
-            data_schema=get_user_schema(user_input),
-            errors=errors,
-            description_placeholders={
-                "documentation_url": "https://github.com/nogic1008/ha_lixil_shutter",
-            },
+            # Store address temporarily for confirm step
+            return await self.async_step_confirm()
+
+        if not self._discovered_devices:
+            # No devices detected — ask for manual address entry
+            schema = vol.Schema({vol.Required(CONF_ADDRESS): str})
+            return self.async_show_form(
+                step_id="user",
+                data_schema=schema,
+                errors=errors,
+                description_placeholders={
+                    "hint": "No devices found nearby. Enter the BLE MAC address manually (e.g. AA:BB:CC:DD:EE:FF).",
+                },
+            )
+
+        # Show discovered device selector
+        device_labels: dict[str, str] = {
+            addr: f"{info.name or addr}  [{addr}]" for addr, info in self._discovered_devices.items()
+        }
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_ADDRESS): vol.In(device_labels),
+            }
         )
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
-    async def async_step_reconfigure(
+    # ------------------------------------------------------------------
+    # Confirm step
+    # ------------------------------------------------------------------
+
+    async def async_step_confirm(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> config_entries.ConfigFlowResult:
         """
-        Handle reconfiguration of the integration.
-
-        Allows users to update their credentials without removing and re-adding
-        the integration.
+        Ask the user to confirm the device before pairing.
 
         Args:
-            user_input: The user input from the reconfigure form, or None for initial display.
+            user_input: Confirmation (any truthy value), or None to show form.
 
         Returns:
-            The config flow result, either showing a form or updating the entry.
-
+            Config flow result — confirm form or next step (pair).
         """
-        entry = self._get_reconfigure_entry()
-        errors: dict[str, str] = {}
-
         if user_input is not None:
-            try:
-                await validate_credentials(
-                    self.hass,
-                    username=user_input[CONF_USERNAME],
-                    password=user_input[CONF_PASSWORD],
-                )
-            except Exception as exception:  # noqa: BLE001
-                errors["base"] = self._map_exception_to_error(exception)
-            else:
-                return self.async_update_reload_and_abort(
-                    entry,
-                    data=user_input,
-                )
+            return await self.async_step_pair()
+
+        info = self._discovery_info
+        address = info.address if info else getattr(self, "_manual_address", "")
+        name = (info.name or address) if info else address
+        product_type = self._get_product_type(info)
 
         return self.async_show_form(
-            step_id="reconfigure",
-            data_schema=get_reconfigure_schema(entry.data.get(CONF_USERNAME, "")),
-            errors=errors,
+            step_id="confirm",
+            description_placeholders={
+                "name": name,
+                "address": address,
+                "product_type": product_type,
+            },
         )
 
-    async def async_step_reauth(
-        self,
-        entry_data: dict[str, Any] | None = None,
-    ) -> config_entries.ConfigFlowResult:
-        """
-        Handle reauthentication when credentials are invalid.
+    # ------------------------------------------------------------------
+    # Pairing step
+    # ------------------------------------------------------------------
 
-        This flow is automatically triggered when the coordinator catches
-        an authentication error (ConfigEntryAuthFailed).
-
-        Args:
-            entry_data: The existing entry data (unused, per convention).
-
-        Returns:
-            The result of the reauth_confirm step.
-
-        """
-        return await self.async_step_reauth_confirm()
-
-    async def async_step_reauth_confirm(
+    async def async_step_pair(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> config_entries.ConfigFlowResult:
         """
-        Handle reauthentication confirmation.
+        Prompt user to activate pairing mode, then execute BLE bonding.
 
-        Shows the reauthentication form and processes updated credentials.
+        Pairing sequence:
+          1. OS-level BLE bonding via client.pair()
+          2. writeDeviceName command
+          3. PAIR_ACTIONS (5 commands)
 
         Args:
-            user_input: The user input with updated credentials, or None for initial display.
+            user_input: Pairing confirmation (any truthy value), or None for initial display.
 
         Returns:
-            The config flow result, either showing a form or updating the entry.
-
+            Config flow result — pairing form, success entry, or error.
         """
-        entry = self._get_reauth_entry()
         errors: dict[str, str] = {}
 
         if user_input is not None:
+            info = self._discovery_info
+            address = info.address if info else self._manual_address
+
             try:
-                await validate_credentials(
-                    self.hass,
-                    username=user_input[CONF_USERNAME],
-                    password=user_input[CONF_PASSWORD],
-                )
-            except Exception as exception:  # noqa: BLE001
-                errors["base"] = self._map_exception_to_error(exception)
-            else:
-                return self.async_update_reload_and_abort(
-                    entry,
-                    data={**entry.data, **user_input},
-                )
+                from homeassistant.components.bluetooth import async_ble_device_from_address  # noqa: PLC0415
+
+                ble_device = async_ble_device_from_address(self.hass, address, connectable=True)
+                if ble_device is None:
+                    errors["base"] = "device_not_found"
+                else:
+                    client = LixilShutterBleClient(ble_device)
+                    await client.connect()
+                    try:
+                        await client.do_pairing()
+                    finally:
+                        await client.disconnect()
+
+                if not errors:
+                    production_info_id = self._get_production_info_id(info)
+                    name = (info.name or address) if info else address
+                    return self.async_create_entry(
+                        title=name,
+                        data={
+                            CONF_ADDRESS: address,
+                            CONF_PRODUCTION_INFO: production_info_id,
+                        },
+                    )
+            except LixilShutterBleClientCommunicationError as exc:
+                LOGGER.warning("Pairing failed for %s: %s", address, exc)
+                errors["base"] = "pairing_failed"
+            except Exception:  # noqa: BLE001
+                LOGGER.exception("Unexpected error during pairing for %s", address)
+                errors["base"] = "unknown"
 
         return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=get_reauth_schema(entry.data.get(CONF_USERNAME, "")),
+            step_id="pair",
             errors=errors,
-            description_placeholders={
-                "username": entry.data.get(CONF_USERNAME, ""),
-            },
         )
 
-    def _map_exception_to_error(self, exception: Exception) -> str:
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _get_production_info_id(info: BluetoothServiceInfoBleak | None) -> int:
         """
-        Map API exceptions to user-facing error keys.
+        Extract ProductionInfo ID from BLE advertising data.
+
+        bytes[0] & 0x0F of manufacturer data gives the product type.
 
         Args:
-            exception: The exception that was raised.
+            info: BLE service info, or None.
 
         Returns:
-            The error key for display in the config flow form.
-
+            Product type ID (0–7), defaults to 0.
         """
-        LOGGER.warning("Error in config flow: %s", exception)
-        exception_name = type(exception).__name__
-        return ERROR_MAP.get(exception_name, "unknown")
+        if info is None:
+            return 0
+        payload = info.manufacturer_data.get(MANUFACTURER_ID, b"")
+        if not payload:
+            return 0
+        return payload[0] & 0x0F
+
+    @staticmethod
+    def _get_product_type(info: BluetoothServiceInfoBleak | None) -> str:
+        """
+        Return human-readable product type string.
+
+        Args:
+            info: BLE service info, or None.
+
+        Returns:
+            Product type name (e.g. "ShutterEaris").
+        """
+        if info is None:
+            return "Unknown"
+        payload = info.manufacturer_data.get(MANUFACTURER_ID, b"")
+        if not payload:
+            return "Unknown"
+        prod_id = payload[0] & 0x0F
+        return PRODUCTION_INFO.get(prod_id, "Unknown")
 
 
 __all__ = ["LixilShutterConfigFlowHandler"]

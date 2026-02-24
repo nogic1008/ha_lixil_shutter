@@ -15,10 +15,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
-    from homeassistant.loader import Integration
 
-    from .api import LixilShutterApiClient
-    from .coordinator import LixilShutterDataUpdateCoordinator
+    from .api import LixilShutterBleClient
 
 
 type LixilShutterConfigEntry = ConfigEntry[LixilShutterData]
@@ -29,9 +27,7 @@ class LixilShutterData:
     """Runtime data for lixil_shutter config entries.
 
     Stored as entry.runtime_data after successful setup.
-    Provides typed access to the API client and coordinator instances.
+    Provides typed access to the BLE client.
     """
 
-    client: LixilShutterApiClient
-    coordinator: LixilShutterDataUpdateCoordinator
-    integration: Integration
+    client: LixilShutterBleClient
