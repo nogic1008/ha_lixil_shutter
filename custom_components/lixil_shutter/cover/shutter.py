@@ -33,15 +33,11 @@ from custom_components.lixil_shutter.const import (
 )
 from homeassistant.components.cover import CoverDeviceClass, CoverEntity, CoverEntityFeature
 from homeassistant.core import callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_track_time_interval
 
 if TYPE_CHECKING:
     from custom_components.lixil_shutter.data import LixilShutterConfigEntry
-    from homeassistant.helpers.device_registry import DeviceInfo
-
-# ProductionInfo IDs that support the ventilation (saifu) position command.
-# type=0 (DecorativeWindow) or type=1 (ShutterEaris).
-_VENTILATION_TYPES: frozenset[int] = frozenset({0, 1})
 
 # Cover state constants (opaque internal state strings)
 _STATE_OPEN = "open"
@@ -62,7 +58,8 @@ class LixilShutterCover(CoverEntity):
 
     Supported features:
     - OPEN / CLOSE / STOP (all product types)
-    - OPEN_TILT: ventilation (saifu) position — ProductionInfo type 0 or 1 only
+    - OPEN_TILT: open the flap slats (採風) (all types except type=0 / type=1)
+    - CLOSE_TILT: close the flap slats by sending the CLOSE command (same types)
     """
 
     _attr_device_class = CoverDeviceClass.SHUTTER
@@ -90,9 +87,11 @@ class LixilShutterCover(CoverEntity):
         # HA entity attributes
         self._attr_unique_id = f"{entry.entry_id}_cover"
         self._attr_device_info = self._build_device_info()
-        # Enable OPEN_TILT (ventilation position) only for ventilation-type shutters (type=0,1).
-        if self._production_info_id in _VENTILATION_TYPES:
-            self._attr_supported_features = self._BASE_FEATURES | CoverEntityFeature.OPEN_TILT
+        # Enable OPEN_TILT / CLOSE_TILT for ventilation types (all except type=0 / type=1).
+        if self._client.has_ventilation:
+            self._attr_supported_features = (
+                self._BASE_FEATURES | CoverEntityFeature.OPEN_TILT | CoverEntityFeature.CLOSE_TILT
+            )
         else:
             self._attr_supported_features = self._BASE_FEATURES
 
@@ -211,6 +210,10 @@ class LixilShutterCover(CoverEntity):
         Sets state optimistically to *closing*, sends the BLE command, and
         keeps the BLE connection alive for ``_monitor_sec`` seconds so the
         device's completion notification can be received.
+
+        On ventilation-type shutters (``has_ventilation=True``), this command
+        also closes the flap slats as part of the full-close
+        motion.  ``async_close_cover_tilt`` uses this same command.
         """
         self._state = _STATE_CLOSING
         self.async_write_ha_state()
@@ -237,15 +240,35 @@ class LixilShutterCover(CoverEntity):
             self._reachable = True
 
     async def async_open_cover_tilt(self, **kwargs: Any) -> None:
-        """Move to ventilation (saifu) position (CMD_SAIFU_PRESS keyCode=0x06, subCode=0x01).
+        """Open the flap slats to allow ventilation (採風).
 
-        Available only on ventilation-type shutters (ProductionInfo type 0 or 1);
-        ``CoverEntityFeature.OPEN_TILT`` is conditionally enabled in ``__init__``.
+        Available on all types except type=0 (DecorativeWindow) and type=1
+        (ShutterEaris).  ``CoverEntityFeature.OPEN_TILT`` is enabled for these
+        devices only.
         """
         try:
-            await self._client.ventilation_position(idle_after=self._monitor_sec)
+            await self._client.open_flap_slats(idle_after=self._monitor_sec)
         except LixilShutterBleClientCommunicationError as exc:
-            LOGGER.error("Failed to set ventilation position on %s: %s", self._address, exc)
+            LOGGER.error("Failed to open flap slats on %s: %s", self._address, exc)
+            self._reachable = False
+            self._state = None
+            self.async_write_ha_state()
+        else:
+            self._reachable = True
+
+    async def async_close_cover_tilt(self, **kwargs: Any) -> None:
+        """Close the flap slats by issuing a full-close command.
+
+        On ventilation-type shutters the close command causes the flap slats
+        to close as part of the shutter's full-close motion.  Uses the same
+        BLE command as ``async_close_cover``.
+        """
+        self._state = _STATE_CLOSING
+        self.async_write_ha_state()
+        try:
+            await self._client.close(idle_after=self._monitor_sec)
+        except LixilShutterBleClientCommunicationError as exc:
+            LOGGER.error("Failed to close flap slats on %s: %s", self._address, exc)
             self._reachable = False
             self._state = None
             self.async_write_ha_state()
@@ -339,7 +362,6 @@ class LixilShutterCover(CoverEntity):
         remains linked to the same physical device even if the entry is
         re-created.
         """
-        from homeassistant.helpers.device_registry import DeviceInfo  # noqa: PLC0415
 
         model_name = PRODUCTION_INFO.get(self._production_info_id, "MyWindow")
         return DeviceInfo(

@@ -18,7 +18,7 @@ from homeassistant.const import Platform
 import homeassistant.helpers.config_validation as cv
 
 from .api import LixilShutterBleClient
-from .const import CONF_ADDRESS, DOMAIN, LOGGER
+from .const import CONF_ADDRESS, CONF_PRODUCTION_INFO, DOMAIN, LOGGER
 from .data import LixilShutterData
 
 if TYPE_CHECKING:
@@ -69,7 +69,7 @@ async def async_setup_entry(
 
     # Create BLE client and store as runtime data
     entry.runtime_data = LixilShutterData(
-        client=LixilShutterBleClient(ble_device),
+        client=LixilShutterBleClient(ble_device, production_info_id=entry.data.get(CONF_PRODUCTION_INFO, 0)),
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
