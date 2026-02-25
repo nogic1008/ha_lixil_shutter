@@ -5,10 +5,13 @@ Supports two registration paths:
 1. **Automatic** — HA discovers the shutter via the SERVICE_UUID declared in
    manifest.json and calls async_step_bluetooth().
 2. **Manual** — user opens "Add Integration" in Settings and searches for
-   "Lixil Bluetooth Shutter". async_step_user() scans for nearby devices.
+   "Lixil Bluetooth Shutter". async_step_user() shows discovered devices.
 
 Only devices actively in pairing mode (PAIRING_MODE_BIT set in manufacturer data)
-are shown, so the pairing sequence is:
+are shown.  If no devices in pairing mode are detected the flow aborts with
+a message instructing the user to activate pairing mode first.
+
+Pairing sequence:
   Step 1  confirm  — Show device info, user confirms.
   Step 2  pair     — Execute BLE pairing immediately (no extra user prompt needed).
                       Shown again only if pairing fails (retry form).
@@ -53,7 +56,6 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """Initialise the flow state."""
         self._discovery_info: BluetoothServiceInfoBleak | None = None
         self._discovered_devices: dict[str, BluetoothServiceInfoBleak] = {}
-        self._manual_address: str = ""
 
     # ------------------------------------------------------------------
     # Automatic BLE discovery (manifest.json bluetooth service_uuid)
@@ -103,8 +105,9 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """
         Handle manual setup initiated by the user.
 
-        Scans for unconfigured LIXIL shutter devices in range and shows
-        a selector.  If none are found the user can enter an address manually.
+        Scans for unconfigured LIXIL shutter devices in pairing mode and shows
+        a selector.  If none are found, aborts with a "no_devices_found" reason
+        so the user knows to activate pairing mode first.
 
         Args:
             user_input: Selected address, or None for initial display.
@@ -129,38 +132,19 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 continue
             self._discovered_devices[service_info.address] = service_info
 
+        if not self._discovered_devices:
+            # No pairing-mode devices detected — instruct the user to activate
+            # pairing mode first, then re-add the integration.
+            return self.async_abort(reason="no_devices_found")
+
         errors: dict[str, str] = {}
 
         if user_input is not None:
             address = user_input[CONF_ADDRESS]
-            if address in self._discovered_devices:
-                self._discovery_info = self._discovered_devices[address]
-            else:
-                # User typed an address manually
-                self._discovery_info = None
-                self._manual_address = address
-
+            self._discovery_info = self._discovered_devices[address]
             await self.async_set_unique_id(address)
             self._abort_if_unique_id_configured()
-
-            # Store address temporarily for confirm step
             return await self.async_step_confirm()
-
-        if not self._discovered_devices:
-            # No pairing-mode devices detected — ask for manual address entry
-            schema = vol.Schema({vol.Required(CONF_ADDRESS): str})
-            return self.async_show_form(
-                step_id="user",
-                data_schema=schema,
-                errors=errors,
-                description_placeholders={
-                    "hint": (
-                        "No shutters in pairing mode found nearby. "
-                        "Hold the remote pairing button for 5-10 seconds until the LED flashes, then retry. "
-                        "Or enter the BLE MAC address manually (e.g. AA:BB:CC:DD:EE:FF)."
-                    ),
-                },
-            )
 
         # Show discovered device selector
         device_labels: dict[str, str] = {
@@ -197,7 +181,7 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_pair(user_input={})
 
         info = self._discovery_info
-        address = info.address if info else getattr(self, "_manual_address", "")
+        address = info.address if info else ""
         name = (info.name or address) if info else address
         product_type = self._get_product_type(info)
 
@@ -240,7 +224,7 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             info = self._discovery_info
-            address = info.address if info else self._manual_address
+            address = info.address if info else ""
 
             try:
                 from homeassistant.components.bluetooth import async_ble_device_from_address  # noqa: PLC0415
@@ -309,7 +293,6 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         payload = info.manufacturer_data.get(MANUFACTURER_ID, b"")
         if not payload:
             return 0
-        # Same formula as app smali: (bytes[0] & 0x0F) % 8
         return (payload[0] & 0x0F) % 8
 
     @staticmethod
@@ -334,8 +317,6 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         )
         if not payload:
             return "Unknown (no manufacturer data)"
-        # Per smali: parse() applies (bytes[0] & 0x0F) % 8 to look up the enum.
-        # The upper nibble can be non-zero (e.g. 0xa9 → nibble=9 → 9%8=1 = ShutterEaris).
         prod_id = (payload[0] & 0x0F) % 8
         return PRODUCTION_INFO.get(prod_id, f"Unknown (type {prod_id})")
 
