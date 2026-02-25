@@ -17,7 +17,8 @@ CHAR_UCG_OUT_UUID = "2141e112-213a-11e6-b67b-9e71128cae77"  # Write
 
 # BLE manufacturer ID for MyWindow series
 MANUFACTURER_ID = 0xFFFF
-# Manufacturer data bytes[0] bit7 = 1 means pairing mode
+# Manufacturer data bytes[1] bit7 = 1 means pairing mode (PairingMode flag)
+# bytes[0] = ProductionInfo (lower 4 bits), bytes[1] = status flags
 PAIRING_MODE_BIT = 0x80
 
 # Timeouts

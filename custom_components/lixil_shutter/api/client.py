@@ -9,22 +9,27 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from contextlib import suppress
 
 from bleak import BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
+from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
+from dbus_fast import BusType
+from dbus_fast.aio import MessageBus as DBusMessageBus
+from dbus_fast.constants import MessageType as DBusMessageType
+from dbus_fast.message import Message as DBusMessage
+from dbus_fast.service import ServiceInterface, method as dbus_method
 
 from custom_components.lixil_shutter.const import (
     CHAR_UCG_IN_UUID,
     CHAR_UCG_OUT_UUID,
     COMMAND_TIMEOUT_SEC,
-    CONNECT_TIMEOUT_SEC,
     KEY_CODE_CLOSE,
     KEY_CODE_OPEN,
     KEY_CODE_POSITION,
     KEY_CODE_STATUS,
     KEY_CODE_STOP,
-    KEY_CODE_WRITE_NAME,
     KEY_STATE_PRESS,
     KEY_STATE_RELEASE,
     LOGGER,
@@ -37,6 +42,64 @@ from custom_components.lixil_shutter.const import (
     SUB_CODE_MEMORY,
     SUB_CODE_VENTILATION,
 )
+
+_PAIRING_AGENT_PATH = "/com/lixil_shutter/pairing_agent"
+
+
+class _JustWorksAgent(ServiceInterface):
+    """Minimal BlueZ NoInputNoOutput pairing agent for Just-Works bonding.
+
+    Registered as the default BlueZ agent before calling Pair() so that
+    BlueZ uses Just-Works / NoInputNoOutput pairing (auto-confirm) instead
+    of rejecting with AuthenticationFailed when no suitable agent is found.
+    All methods auto-confirm. The agent is unregistered after pairing.
+
+    The dbus_fast @dbus_method() decorator requires parameter annotations to be
+    D-Bus type strings ('o', 's', 'u', 'q').  Return type annotations must be
+    omitted for void methods because 'None' is not a valid D-Bus type string in
+    this library version.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("org.bluez.Agent1")
+
+    @dbus_method()
+    def Release(self):
+        pass
+
+    @dbus_method()
+    def Cancel(self):
+        pass
+
+    @dbus_method()  # type: ignore[misc]
+    def RequestAuthorization(self, device: o):  # type: ignore[reportUndefinedVariable]  # noqa: F821
+        """Auto-authorize for Just-Works; never called with NoInputNoOutput."""
+
+    @dbus_method()  # type: ignore[misc]
+    def RequestPinCode(self, device: o) -> s:  # type: ignore[reportUndefinedVariable]  # noqa: F821
+        """Fallback pin; not used in Just-Works."""
+        return "0000"  # type: ignore[return-value]
+
+    @dbus_method()  # type: ignore[misc]
+    def RequestPasskey(self, device: o) -> u:  # type: ignore[reportUndefinedVariable]  # noqa: F821
+        """Fallback passkey; not used in Just-Works."""
+        return 0  # type: ignore[return-value]
+
+    @dbus_method()  # type: ignore[misc]
+    def DisplayPasskey(self, device: o, passkey: u, entered: q):  # type: ignore[reportUndefinedVariable]  # noqa: F821
+        """No display available (NoInputNoOutput)."""
+
+    @dbus_method()  # type: ignore[misc]
+    def DisplayPinCode(self, device: o, pincode: s):  # type: ignore[reportUndefinedVariable]  # noqa: F821
+        """No display available (NoInputNoOutput)."""
+
+    @dbus_method()  # type: ignore[misc]
+    def RequestConfirmation(self, device: o, passkey: u):  # type: ignore[reportUndefinedVariable]  # noqa: F821
+        """Auto-confirm for Just-Works numeric comparison."""
+
+    @dbus_method()  # type: ignore[misc]
+    def AuthorizeService(self, device: o, uuid: s):  # type: ignore[reportUndefinedVariable]  # noqa: F821
+        """Auto-authorize all services."""
 
 
 class LixilShutterBleClientError(Exception):
@@ -76,6 +139,7 @@ class LixilShutterBleClient:
         self._tag: int = 0
         self._status_callback: Callable[[str], None] | None = None
         self._connected = False
+        self._notify_active = False  # True only when start_notify() was called
 
     # ------------------------------------------------------------------
     # Connection management
@@ -91,9 +155,15 @@ class LixilShutterBleClient:
         """Return True if BLE connection is active."""
         return self._connected and self._client is not None and self._client.is_connected
 
-    async def connect(self, status_callback: Callable[[str], None] | None = None) -> None:
+    async def connect(
+        self,
+        status_callback: Callable[[str], None] | None = None,
+    ) -> None:
         """
-        Connect to the shutter and start notifications.
+        Connect to the shutter and start GATT notifications.
+
+        Establishes BLE connection and enables CCCD notifications (start_notify),
+        which completes the GATT handshake so the device enters CONNECTED state.
 
         Args:
             status_callback: Called with status string on each notification.
@@ -102,18 +172,66 @@ class LixilShutterBleClient:
             LixilShutterBleClientCommunicationError: On connection failure.
         """
         self._status_callback = status_callback
+        LOGGER.debug("[connect] start: _notify_active=%s", self._notify_active)
+
+        # Clean up any existing client.
+        if self._client is not None:
+            LOGGER.debug("[connect] cleaning up existing client (notify_active=%s)", self._notify_active)
+            if self._notify_active:
+                with suppress(Exception):
+                    await self._client.stop_notify(CHAR_UCG_IN_UUID)
+                self._notify_active = False
+            with suppress(Exception):
+                await self._client.disconnect()
+            self._client = None
         try:
-            self._client = BleakClient(
+            LOGGER.debug("[connect] establishing connection to %s", self.address)
+            self._client = await establish_connection(
+                BleakClientWithServiceCache,
                 self._ble_device,
+                self._ble_device.address,
                 disconnected_callback=self._on_disconnected,
             )
-            async with asyncio.timeout(CONNECT_TIMEOUT_SEC):
-                await self._client.connect()
-            await self._client.start_notify(CHAR_UCG_IN_UUID, self._on_notification)
+            LOGGER.debug("[connect] connection OK for %s, calling start_notify", self.address)
+            try:
+                await self._client.start_notify(CHAR_UCG_IN_UUID, self._on_notification)
+            except Exception as start_exc:
+                if "NotPermitted" not in str(start_exc) or "Notify acquired" not in str(start_exc):
+                    raise
+                # Stale BlueZ "Notify acquired" flag from a previous HA session.
+                # Fix: clear via D-Bus StopNotify, reconnect, retry.
+                LOGGER.debug(
+                    "[connect] NotPermitted Notify acquired for %s — clearing via D-Bus StopNotify",
+                    self.address,
+                )
+                await self._dbus_stop_notify_for_device()
+                with suppress(Exception):
+                    await self._client.disconnect()
+                self._client = None
+                LOGGER.debug("[connect] reconnecting after StopNotify for %s", self.address)
+                self._client = await establish_connection(
+                    BleakClientWithServiceCache,
+                    self._ble_device,
+                    self._ble_device.address,
+                    disconnected_callback=self._on_disconnected,
+                )
+                LOGGER.debug("[connect] reconnect OK for %s, retrying start_notify", self.address)
+                await self._client.start_notify(CHAR_UCG_IN_UUID, self._on_notification)
+            self._notify_active = True
             self._connected = True
-            LOGGER.debug("Connected to shutter %s", self.address)
+            LOGGER.debug("[connect] done: connected to %s", self.address)
         except Exception as exc:
+            LOGGER.debug("[connect] exception for %s: %s (notify_active=%s)", self.address, exc, self._notify_active)
             self._connected = False
+            if self._client is not None:
+                if self._notify_active:
+                    with suppress(Exception):
+                        await self._client.stop_notify(CHAR_UCG_IN_UUID)
+                    LOGGER.debug("[connect] stop_notify called in except block for %s", self.address)
+                self._notify_active = False
+                with suppress(Exception):
+                    await self._client.disconnect()
+                self._client = None
             msg = f"Failed to connect to {self.address}: {exc}"
             raise LixilShutterBleClientCommunicationError(msg) from exc
 
@@ -121,11 +239,16 @@ class LixilShutterBleClient:
         """Disconnect from the shutter and clean up resources."""
         self._connected = False
         if self._client and self._client.is_connected:
+            if self._notify_active:
+                try:
+                    await self._client.stop_notify(CHAR_UCG_IN_UUID)
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.debug("Error stopping notify on %s: %s", self.address, exc)
             try:
-                await self._client.stop_notify(CHAR_UCG_IN_UUID)
                 await self._client.disconnect()
             except Exception as exc:  # noqa: BLE001
                 LOGGER.debug("Error during disconnect from %s: %s", self.address, exc)
+        self._notify_active = False
         self._client = None
         LOGGER.debug("Disconnected from shutter %s", self.address)
 
@@ -133,6 +256,90 @@ class LixilShutterBleClient:
         """Handle unexpected BLE disconnection."""
         LOGGER.warning("Shutter %s disconnected unexpectedly", self.address)
         self._connected = False
+        LOGGER.debug("[_on_disconnected] notify_active=%s", self._notify_active)
+        # bleak's stop_notify() raises BleakError("Not connected") when
+        # is_connected=False, so we cannot call StopNotify here.
+        # The proactive stop_notify() at the start of the next connect() will
+        # clear any stale BlueZ "Notify acquired" state.
+        self._notify_active = False
+
+    async def _dbus_stop_notify_for_device(self) -> None:
+        """Clear BlueZ 'Notify acquired' state by calling StopNotify via D-Bus.
+
+        Called when start_notify raises "[org.bluez.Error.NotPermitted] Notify
+        acquired" — which means BlueZ has a stale acquired flag from a previous
+        HA session (BlueZ persists it across process restarts).
+
+        bleak's stop_notify() cannot be used here: it checks whether the current
+        bleak session called start_notify first and raises BleakError if not, so
+        it never reaches D-Bus.  This method uses dbus_fast directly (a transitive
+        HA dependency via bleak) to call StopNotify without that guard.
+
+        Note: StopNotify causes the BLE device to disconnect.  The caller must
+        disconnect the existing client and reconnect after this call.
+
+        Best-effort: any failure is logged at DEBUG level and suppressed.
+        """
+        bus: DBusMessageBus | None = None
+        try:
+            bus = await DBusMessageBus(bus_type=BusType.SYSTEM).connect()
+
+            # Enumerate all BlueZ objects to find the D-Bus path for our characteristic.
+            reply = await bus.call(
+                DBusMessage(
+                    destination="org.bluez",
+                    path="/",
+                    interface="org.freedesktop.DBus.ObjectManager",
+                    member="GetManagedObjects",
+                )
+            )
+            if reply.message_type != DBusMessageType.METHOD_RETURN:
+                LOGGER.debug("[dbus_stop_notify] GetManagedObjects failed: %s", reply)
+                return
+
+            objects: dict = reply.body[0]
+            addr_upper = self.address.upper().replace(":", "_")
+            dev_prefix = f"/org/bluez/hci0/dev_{addr_upper}"
+
+            char_path: str | None = None
+            for path, interfaces in objects.items():
+                if not path.startswith(dev_prefix):
+                    continue
+                if "org.bluez.GattCharacteristic1" not in interfaces:
+                    continue
+                props = interfaces["org.bluez.GattCharacteristic1"]
+                uuid_variant = props.get("UUID")
+                if uuid_variant is None:
+                    continue
+                uuid_val = uuid_variant.value if hasattr(uuid_variant, "value") else uuid_variant
+                if str(uuid_val).lower() == CHAR_UCG_IN_UUID.lower():
+                    char_path = path
+                    break
+
+            if char_path is None:
+                LOGGER.debug(
+                    "[dbus_stop_notify] char %s not found in BlueZ for %s",
+                    CHAR_UCG_IN_UUID,
+                    self.address,
+                )
+                return
+
+            LOGGER.debug("[dbus_stop_notify] calling StopNotify for %s path=%s", self.address, char_path)
+            stop_reply = await bus.call(
+                DBusMessage(
+                    destination="org.bluez",
+                    path=char_path,
+                    interface="org.bluez.GattCharacteristic1",
+                    member="StopNotify",
+                )
+            )
+            LOGGER.debug("[dbus_stop_notify] StopNotify reply for %s: %s", self.address, stop_reply)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.debug("[dbus_stop_notify] error for %s: %s", self.address, exc)
+        finally:
+            if bus is not None:
+                with suppress(Exception):
+                    bus.disconnect()
 
     # ------------------------------------------------------------------
     # Command sending
@@ -167,57 +374,158 @@ class LixilShutterBleClient:
     # Pairing
     # ------------------------------------------------------------------
 
-    async def do_pairing(self, device_name: str = "HA_LIXIL") -> None:
+    async def do_pairing(self) -> None:
         """
-        Perform application-level pairing sequence.
+        Perform BLE-level pairing via BlueZ D-Bus Pair().
 
-        This executes after OS-level BLE bonding (client.pair()) is complete:
-        1. OS BLE bonding (client.pair())
-        2. writeDeviceName command
-        3. PAIR_ACTIONS sequence (5 commands)
+        Strategy:
+        1. Register a Just-Works (NoInputNoOutput) pairing agent first.
+        2. RemoveDevice — wipe stale BlueZ cache.
+        3. Pre-connect via habluetooth (BLE).
+        4. Call Pair() WHILE CONNECTED — BlueZ runs SMP over the existing LE
+           link.  The Just-Works agent auto-confirms the bond.
+        5. Disconnect.
+        6. UnregisterAgent.
 
-        Call from config flow after connecting in pairing mode.
-
-        Args:
-            device_name: Name to register on the device (max 99 chars).
+        Calling Pair() after disconnect caused BLE→BR/EDR fallback (Page
+        Timeout) even when AddressType=public was correctly set.  Keeping the
+        connection alive avoids that path entirely.
 
         Raises:
-            LixilShutterBleClientCommunicationError: On GATT write failure.
+            LixilShutterBleClientCommunicationError: On connection or pairing failure.
         """
-        if not self._client or not self._client.is_connected:
-            msg = "Not connected — cannot pair"
-            raise LixilShutterBleClientCommunicationError(msg)
+        addr_upper = self.address.upper().replace(":", "_")
+        device_path = f"/org/bluez/hci0/dev_{addr_upper}"
+        adapter_path = "/org/bluez/hci0"
+
+        LOGGER.debug("[do_pairing] start for %s (dbus path=%s)", self.address, device_path)
+        client: BleakClient | None = None
+        bus: DBusMessageBus | None = None
+        agent_registered = False
         try:
-            # Step 1: OS-level BLE bonding
-            await self._client.pair()
+            bus = await DBusMessageBus(bus_type=BusType.SYSTEM).connect()
 
-            # Step 2: writeDeviceName (keyState=0x03, keyCode=0x0C, len, 0x00) + name bytes
-            name_bytes = device_name.encode("utf-8")[:99]
-            header = bytes([KEY_STATE_RELEASE, KEY_CODE_WRITE_NAME, len(name_bytes), SUB_CODE_DEFAULT])
-            await self._client.write_gatt_char(CHAR_UCG_OUT_UUID, header + name_bytes, response=True)
+            # Step 1: Register Just-Works agent BEFORE connecting.
+            LOGGER.debug("[do_pairing] registering Just-Works agent for %s", self.address)
+            agent = _JustWorksAgent()
+            bus.export(_PAIRING_AGENT_PATH, agent)
+            reg_reply = await bus.call(
+                DBusMessage(
+                    destination="org.bluez",
+                    path="/org/bluez",
+                    interface="org.bluez.AgentManager1",
+                    member="RegisterAgent",
+                    signature="os",
+                    body=[_PAIRING_AGENT_PATH, "NoInputNoOutput"],
+                )
+            )
+            if reg_reply.message_type == DBusMessageType.ERROR:
+                LOGGER.debug(
+                    "[do_pairing] RegisterAgent failed (continuing): %s %s",
+                    reg_reply.error_name,
+                    reg_reply.body,
+                )
+            else:
+                agent_registered = True
+                LOGGER.debug("[do_pairing] agent registered; requesting default-agent")
+                await bus.call(
+                    DBusMessage(
+                        destination="org.bluez",
+                        path="/org/bluez",
+                        interface="org.bluez.AgentManager1",
+                        member="RequestDefaultAgent",
+                        signature="o",
+                        body=[_PAIRING_AGENT_PATH],
+                    )
+                )
 
-            # Step 3: PAIR_ACTIONS — 5 press+release commands
-            pair_actions: list[tuple[int, int]] = [
-                (KEY_CODE_OPEN, SUB_CODE_DEFAULT),
-                (KEY_CODE_CLOSE, SUB_CODE_DEFAULT),
-                (KEY_CODE_STOP, SUB_CODE_DEFAULT),
-                (KEY_CODE_POSITION, SUB_CODE_VENTILATION),
-                (KEY_CODE_POSITION, SUB_CODE_VENTILATION),
-            ]
-            for key_code, sub_code in pair_actions:
-                press = self._build_command(KEY_STATE_PRESS, key_code, sub_code, 0)
-                release = self._build_command(KEY_STATE_RELEASE, key_code, sub_code, 0)
-                await self._client.write_gatt_char(CHAR_UCG_OUT_UUID, press, response=True)
-                await asyncio.sleep(RELEASE_DELAY_SEC)
-                await self._client.write_gatt_char(CHAR_UCG_OUT_UUID, release, response=True)
-                await asyncio.sleep(0.5)
+            # Step 2: RemoveDevice — wipe stale cached device object.
+            LOGGER.debug("[do_pairing] removing stale device from BlueZ for %s", self.address)
+            remove_reply = await bus.call(
+                DBusMessage(
+                    destination="org.bluez",
+                    path=adapter_path,
+                    interface="org.bluez.Adapter1",
+                    member="RemoveDevice",
+                    signature="o",
+                    body=[device_path],
+                )
+            )
+            if remove_reply.message_type == DBusMessageType.ERROR:
+                LOGGER.debug(
+                    "[do_pairing] RemoveDevice reply (DoesNotExist is expected): %s %s",
+                    remove_reply.error_name,
+                    remove_reply.body,
+                )
+            else:
+                LOGGER.debug("[do_pairing] RemoveDevice succeeded for %s", self.address)
 
-            LOGGER.debug("Pairing complete for %s", self.address)
+            # Step 3: Pre-connect via habluetooth to create a fresh BLE device
+            # object. Keep the connection open — Pair() over an active LE link
+            # avoids BR/EDR fallback (Page Timeout) that happens when calling
+            # Pair() after disconnect.
+            LOGGER.debug("[do_pairing] connecting to %s (keeping alive for Pair)", self.address)
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                self._ble_device,
+                self._ble_device.address,
+            )
+            LOGGER.debug("[do_pairing] connected to %s — calling D-Bus Pair()", self.address)
+
+            # Step 4: Pair() while connected. The Just-Works agent handles SMP.
+            reply = await asyncio.wait_for(
+                bus.call(
+                    DBusMessage(
+                        destination="org.bluez",
+                        path=device_path,
+                        interface="org.bluez.Device1",
+                        member="Pair",
+                    )
+                ),
+                timeout=60.0,
+            )
+            if reply.message_type == DBusMessageType.METHOD_RETURN:
+                LOGGER.debug("[do_pairing] Pair() succeeded for %s", self.address)
+            elif reply.message_type == DBusMessageType.ERROR:
+                error_name = reply.error_name or ""
+                # AlreadyExists = already bonded; InProgress = other attempt running.
+                if "AlreadyExists" in error_name or "InProgress" in error_name:
+                    LOGGER.debug(
+                        "[do_pairing] already paired / in-progress for %s (%s)",
+                        self.address,
+                        error_name,
+                    )
+                else:
+                    msg = f"Pairing failed for {self.address}: [{error_name}] {reply.body}"
+                    raise LixilShutterBleClientCommunicationError(msg)  # noqa: TRY301
+            else:
+                msg = f"Pairing unexpected reply for {self.address}: {reply}"
+                raise LixilShutterBleClientCommunicationError(msg)  # noqa: TRY301
+            LOGGER.debug("[do_pairing] done for %s", self.address)
         except LixilShutterBleClientCommunicationError:
             raise
         except Exception as exc:
             msg = f"Pairing failed for {self.address}: {exc}"
             raise LixilShutterBleClientCommunicationError(msg) from exc
+        finally:
+            if client is not None:
+                with suppress(Exception):
+                    await client.disconnect()
+            if bus is not None:
+                if agent_registered:
+                    with suppress(Exception):
+                        await bus.call(
+                            DBusMessage(
+                                destination="org.bluez",
+                                path="/org/bluez",
+                                interface="org.bluez.AgentManager1",
+                                member="UnregisterAgent",
+                                signature="o",
+                                body=[_PAIRING_AGENT_PATH],
+                            )
+                        )
+                with suppress(Exception):
+                    bus.disconnect()
 
     # ------------------------------------------------------------------
     # Internal helpers

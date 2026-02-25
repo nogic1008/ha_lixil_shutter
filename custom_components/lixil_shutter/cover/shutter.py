@@ -15,10 +15,8 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
-from homeassistant.components.cover import CoverDeviceClass, CoverEntity, CoverEntityFeature
-from homeassistant.core import callback
-from lixil_shutter.api import LixilShutterBleClient, LixilShutterBleClientCommunicationError
-from lixil_shutter.const import (
+from custom_components.lixil_shutter.api import LixilShutterBleClient, LixilShutterBleClientCommunicationError
+from custom_components.lixil_shutter.const import (
     CONF_ADDRESS,
     CONF_PRODUCTION_INFO,
     DOMAIN,
@@ -28,10 +26,12 @@ from lixil_shutter.const import (
     STATUS_MIN,
     STATUS_OPEN,
 )
+from homeassistant.components.cover import CoverDeviceClass, CoverEntity, CoverEntityFeature
+from homeassistant.core import callback
 
 if TYPE_CHECKING:
+    from custom_components.lixil_shutter.data import LixilShutterConfigEntry
     from homeassistant.helpers.device_registry import DeviceInfo
-    from lixil_shutter.data import LixilShutterConfigEntry
 
 SCAN_INTERVAL = timedelta(seconds=30)
 
