@@ -41,20 +41,7 @@ async def async_setup_entry(
     hass: HomeAssistant,
     entry: LixilShutterConfigEntry,
 ) -> bool:
-    """
-    Set up LIXIL Shutter integration from a config entry.
-
-    1. Resolves the BLE device via HA bluetooth scanner
-    2. Creates the BLE client
-    3. Forwards setup to Cover platform
-
-    Args:
-        hass: The Home Assistant instance.
-        entry: The config entry with BLE address in entry.data[CONF_ADDRESS].
-
-    Returns:
-        True if setup was successful.
-    """
+    """Set up LIXIL Shutter from a config entry."""
     address: str = entry.data[CONF_ADDRESS]
 
     # Resolve BLE device from HA bluetooth scanner cache
@@ -81,17 +68,5 @@ async def async_unload_entry(
     hass: HomeAssistant,
     entry: LixilShutterConfigEntry,
 ) -> bool:
-    """
-    Unload a config entry.
-
-    Platforms will call async_will_remove_from_hass on their entities,
-    which triggers BLE disconnect.
-
-    Args:
-        hass: The Home Assistant instance.
-        entry: The config entry being unloaded.
-
-    Returns:
-        True if unload was successful.
-    """
+    """Unload a config entry."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

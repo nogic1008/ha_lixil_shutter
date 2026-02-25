@@ -2,7 +2,7 @@
 LIXIL Shutter cover entity.
 
 Implements Cover platform for LIXIL MyWindow Bluetooth shutter.
-Controls: open / close / stop / memory position / ventilation position.
+Controls: open / close / stop / tilt.
 
 State management:
 - Connected via BLE (managed by async_added_to_hass / async_will_remove_from_hass)
@@ -12,7 +12,7 @@ State management:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -31,7 +31,7 @@ from custom_components.lixil_shutter.const import (
     STATUS_MIN,
     STATUS_OPEN,
 )
-from homeassistant.components.cover import CoverDeviceClass, CoverEntity, CoverEntityFeature
+from homeassistant.components.cover import CoverDeviceClass, CoverEntity, CoverEntityFeature, CoverState
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_track_time_interval
@@ -39,11 +39,13 @@ from homeassistant.helpers.event import async_track_time_interval
 if TYPE_CHECKING:
     from custom_components.lixil_shutter.data import LixilShutterConfigEntry
 
-# Cover state constants (opaque internal state strings)
-_STATE_OPEN = "open"
-_STATE_CLOSED = "closed"
-_STATE_OPENING = "opening"
-_STATE_CLOSING = "closing"
+# Mapping from device STATUS_* constants to HA CoverState.
+# STATUS_UNKNOWN and any unrecognised value map to None (unavailable).
+_STATUS_TO_COVER_STATE: dict[str, CoverState] = {
+    STATUS_OPEN: CoverState.OPEN,
+    STATUS_CLOSED: CoverState.CLOSED,
+    STATUS_MIN: CoverState.CLOSED,
+}
 
 
 class LixilShutterCover(CoverEntity):
@@ -80,13 +82,17 @@ class LixilShutterCover(CoverEntity):
         self._address: str = entry.data[CONF_ADDRESS]
         self._production_info_id: int = entry.data.get(CONF_PRODUCTION_INFO, 0)
         self._client: LixilShutterBleClient = entry.runtime_data.client
-        self._state: str | None = None  # None = unavailable
-        self._reachable: bool = False  # True after first successful connection
         self._unsub_poll: Callable[[], None] | None = None
 
         # HA entity attributes
+        self._attr_is_closed: bool | None = None  # None = state unknown / unavailable
+        self._attr_available: bool = False  # True after first successful BLE operation
         self._attr_unique_id = f"{entry.entry_id}_cover"
         self._attr_device_info = self._build_device_info()
+        self._attr_extra_state_attributes: dict[str, Any] = {
+            "ble_address": self._address,
+            "product_type": PRODUCTION_INFO.get(self._production_info_id, "Unknown"),
+        }
         # Enable OPEN_TILT / CLOSE_TILT for ventilation types (all except type=0 / type=1).
         if self._client.has_ventilation:
             self._attr_supported_features = (
@@ -119,7 +125,7 @@ class LixilShutterCover(CoverEntity):
 
         Cancels the periodic poll timer, clears the GATT notification
         callback, and explicitly disconnects the BLE link so the device
-        is immediately available to other clients (e.g. the Android app).
+        is immediately available to other BLE clients.
         """
         if self._unsub_poll is not None:
             self._unsub_poll()
@@ -133,147 +139,69 @@ class LixilShutterCover(CoverEntity):
         Handle a status notification pushed by the device over GATT.
 
         Decorated with ``@callback`` — runs on the HA event loop.
-        Updates internal state and writes the new state to HA only when
-        the status actually changes, to avoid redundant state writes.
+        Updates ``_attr_is_*`` fields and writes the new state to HA.
 
         Args:
             status: One of STATUS_OPEN, STATUS_CLOSED, STATUS_MIN, STATUS_UNKNOWN.
         """
-        new_state = self._map_device_status(status)
-        if new_state != self._state:
-            self._state = new_state
-            self._reachable = True
-            self.async_write_ha_state()
-
-    # ------------------------------------------------------------------
-    # Cover entity properties
-    # ------------------------------------------------------------------
-
-    @property
-    def available(self) -> bool:
-        """Return True when at least one successful BLE operation has completed."""
-        return self._reachable
-
-    @property
-    def is_closed(self) -> bool | None:
-        """Return True if the shutter is fully closed."""
-        if self._state == _STATE_CLOSED:
-            return True
-        if self._state == _STATE_OPEN:
-            return False
-        return None
-
-    @property
-    def is_opening(self) -> bool:
-        """Return True if the shutter is currently opening."""
-        return self._state == _STATE_OPENING
-
-    @property
-    def is_closing(self) -> bool:
-        """Return True if the shutter is currently closing."""
-        return self._state == _STATE_CLOSING
-
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        """Expose additional diagnostic attributes."""
-        return {
-            "ble_address": self._address,
-            "product_type": PRODUCTION_INFO.get(self._production_info_id, "Unknown"),
-        }
+        self._apply_state(_STATUS_TO_COVER_STATE.get(status))
+        self._attr_available = True
+        self.async_write_ha_state()
 
     # ------------------------------------------------------------------
     # Cover commands
     # ------------------------------------------------------------------
 
     async def async_open_cover(self, **kwargs: Any) -> None:
-        """Open the shutter fully (CMD_OPEN_PRESS keyCode=0x03).
-
-        Sets state optimistically to *opening*, sends the BLE command, and
-        keeps the BLE connection alive for ``_monitor_sec`` seconds so the
-        device's completion notification can be received.
-        """
-        self._state = _STATE_OPENING
-        self.async_write_ha_state()
-        try:
-            await self._client.open(idle_after=self._monitor_sec)
-        except LixilShutterBleClientCommunicationError as exc:
-            LOGGER.error("Failed to open shutter %s: %s", self._address, exc)
-            self._reachable = False
-            self._state = None
-            self.async_write_ha_state()
-        else:
-            self._reachable = True
+        """Open the shutter fully (keyCode=0x03)."""
+        await self._run_command(
+            self._client.open(idle_after=self._monitor_sec),
+            "Failed to open shutter %s: %s",
+            CoverState.OPENING,
+        )
 
     async def async_close_cover(self, **kwargs: Any) -> None:
-        """Close the shutter fully (CMD_CLOSE_PRESS keyCode=0x04).
+        """Close the shutter fully (keyCode=0x04).
 
-        Sets state optimistically to *closing*, sends the BLE command, and
-        keeps the BLE connection alive for ``_monitor_sec`` seconds so the
-        device's completion notification can be received.
-
-        On ventilation-type shutters (``has_ventilation=True``), this command
-        also closes the flap slats as part of the full-close
-        motion.  ``async_close_cover_tilt`` uses this same command.
+        On ventilation-type shutters, also closes the flap slats as part of
+        the full-close motion.  ``async_close_cover_tilt`` uses this same command.
         """
-        self._state = _STATE_CLOSING
-        self.async_write_ha_state()
-        try:
-            await self._client.close(idle_after=self._monitor_sec)
-        except LixilShutterBleClientCommunicationError as exc:
-            LOGGER.error("Failed to close shutter %s: %s", self._address, exc)
-            self._reachable = False
-            self._state = None
-            self.async_write_ha_state()
-        else:
-            self._reachable = True
+        await self._run_command(
+            self._client.close(idle_after=self._monitor_sec),
+            "Failed to close shutter %s: %s",
+            CoverState.CLOSING,
+        )
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
-        """Stop the shutter mid-travel (CMD_STOP_PRESS keyCode=0x05)."""
-        try:
-            await self._client.stop(idle_after=self._monitor_sec)
-        except LixilShutterBleClientCommunicationError as exc:
-            LOGGER.error("Failed to stop shutter %s: %s", self._address, exc)
-            self._reachable = False
-            self._state = None
-            self.async_write_ha_state()
-        else:
-            self._reachable = True
+        """Stop the shutter mid-travel (keyCode=0x05)."""
+        await self._run_command(
+            self._client.stop(idle_after=self._monitor_sec),
+            "Failed to stop shutter %s: %s",
+        )
 
     async def async_open_cover_tilt(self, **kwargs: Any) -> None:
         """Open the flap slats to allow ventilation (採風).
 
-        Available on all types except type=0 (DecorativeWindow) and type=1
-        (ShutterEaris).  ``CoverEntityFeature.OPEN_TILT`` is enabled for these
-        devices only.
+        Available on all types except type=0 and type=1.
+        ``CoverEntityFeature.OPEN_TILT`` is enabled for these devices only.
         """
-        try:
-            await self._client.open_flap_slats(idle_after=self._monitor_sec)
-        except LixilShutterBleClientCommunicationError as exc:
-            LOGGER.error("Failed to open flap slats on %s: %s", self._address, exc)
-            self._reachable = False
-            self._state = None
-            self.async_write_ha_state()
-        else:
-            self._reachable = True
+        await self._run_command(
+            self._client.open_flap_slats(idle_after=self._monitor_sec),
+            "Failed to open flap slats on %s: %s",
+        )
 
     async def async_close_cover_tilt(self, **kwargs: Any) -> None:
         """Close the flap slats by issuing a full-close command.
 
-        On ventilation-type shutters the close command causes the flap slats
-        to close as part of the shutter's full-close motion.  Uses the same
-        BLE command as ``async_close_cover``.
+        The close command causes the flap slats to close as part of the
+        shutter's full-close motion.  Uses the same BLE command as
+        ``async_close_cover``.
         """
-        self._state = _STATE_CLOSING
-        self.async_write_ha_state()
-        try:
-            await self._client.close(idle_after=self._monitor_sec)
-        except LixilShutterBleClientCommunicationError as exc:
-            LOGGER.error("Failed to close flap slats on %s: %s", self._address, exc)
-            self._reachable = False
-            self._state = None
-            self.async_write_ha_state()
-        else:
-            self._reachable = True
+        await self._run_command(
+            self._client.close(idle_after=self._monitor_sec),
+            "Failed to close flap slats on %s: %s",
+            CoverState.CLOSING,
+        )
 
     async def async_update(self) -> None:
         """Request the current shutter status from the device.
@@ -282,21 +210,60 @@ class LixilShutterCover(CoverEntity):
         STATUS_REQUEST command (keyCode=0x0B), and the device responds with
         a GATT notification handled by ``_on_status_notification``.  The
         client's idle-disconnect timer releases the BLE link shortly after
-        the notification arrives, allowing other BLE clients (e.g. the
-        Android app) to connect in between polls.
+        the notification arrives, allowing other BLE clients to connect
+        in between polls.
         """
         try:
             await self._client.request_status()
         except LixilShutterBleClientCommunicationError as exc:
             LOGGER.warning("Status poll failed for %s: %s", self._address, exc)
-            self._reachable = False
-            self._state = None
+            self._attr_available = False
+            self._apply_state(None)
         else:
-            self._reachable = True
+            self._attr_available = True
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _apply_state(self, state: CoverState | None) -> None:
+        """Set ``_attr_is_closed``, ``_attr_is_opening``, ``_attr_is_closing`` from *state*.
+
+        Passing ``None`` clears all state fields (treated as unavailable).
+        """
+        self._attr_is_closed = None if state is None else state == CoverState.CLOSED
+        self._attr_is_opening = state == CoverState.OPENING
+        self._attr_is_closing = state == CoverState.CLOSING
+
+    async def _run_command(
+        self,
+        cmd: Awaitable[None],
+        error_msg: str,
+        optimistic_state: CoverState | None = None,
+    ) -> None:
+        """Run a BLE command with standard error handling.
+
+        Optionally sets an optimistic state before sending the command.
+        On failure, logs the error, marks the device unreachable, and clears
+        the state.  On success, marks the device as reachable.
+
+        Args:
+            cmd: Coroutine to await (BLE client command).
+            error_msg: ``LOGGER.error`` template; receives address and exception.
+            optimistic_state: State to set before sending (e.g. ``CoverState.OPENING``).
+        """
+        if optimistic_state is not None:
+            self._apply_state(optimistic_state)
+            self.async_write_ha_state()
+        try:
+            await cmd
+        except LixilShutterBleClientCommunicationError as exc:
+            LOGGER.error(error_msg, self._address, exc)
+            self._attr_available = False
+            self._apply_state(None)
+            self.async_write_ha_state()
+        else:
+            self._attr_available = True
 
     @property
     def _monitor_sec(self) -> float:
@@ -337,24 +304,6 @@ class LixilShutterCover(CoverEntity):
         """
         self._schedule_poll()
 
-    @staticmethod
-    def _map_device_status(status: str) -> str | None:
-        """Map a device status string from the GATT notification to an internal state.
-
-        Args:
-            status: Parsed status constant from the notification
-                (STATUS_OPEN, STATUS_CLOSED, STATUS_MIN, or STATUS_UNKNOWN).
-
-        Returns:
-            Internal state string (_STATE_OPEN / _STATE_CLOSED) or
-            None when the status cannot be mapped (treated as unavailable).
-        """
-        if status == STATUS_OPEN:
-            return _STATE_OPEN
-        if status in (STATUS_CLOSED, STATUS_MIN):
-            return _STATE_CLOSED
-        return None
-
     def _build_device_info(self) -> DeviceInfo:
         """Build the HA ``DeviceInfo`` dict from config entry data.
 
@@ -363,7 +312,7 @@ class LixilShutterCover(CoverEntity):
         re-created.
         """
 
-        model_name = PRODUCTION_INFO.get(self._production_info_id, "MyWindow")
+        model_name = PRODUCTION_INFO.get(self._production_info_id, "Unknown")
         return DeviceInfo(
             identifiers={(DOMAIN, self._address)},
             name=self._entry.title,

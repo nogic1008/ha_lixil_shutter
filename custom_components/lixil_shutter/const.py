@@ -62,7 +62,7 @@ STATUS_CLOSED = "closed"  # bytes[2] bit4 = 1
 STATUS_MIN = "min"  # bytes[2] bit5 = 1 (fully closed / minimum position)
 STATUS_UNKNOWN = "unknown"
 
-# Product type (advertising bytes[0] & 0x0F)
+# Product type (advertising bytes[0] & 0x07)
 PRODUCTION_INFO: dict[int, str] = {
     0: "DecorativeWindow",
     1: "ShutterEaris",

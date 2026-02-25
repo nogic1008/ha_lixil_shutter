@@ -156,7 +156,7 @@ class LixilShutterBleClient:
         Args:
             ble_device: The discovered BLE device from HA bluetooth scanner.
             production_info_id: ProductionInfo type ID from BLE advertisement
-                (``bytes[0] & 0x0F``).  Determines which commands are available
+                (``bytes[0] & 0x07``).  Determines which commands are available
                 and how they are encoded.  Defaults to ``0`` (unknown type).
         """
         self._ble_device = ble_device

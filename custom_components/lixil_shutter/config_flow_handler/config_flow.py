@@ -137,8 +137,6 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
             # pairing mode first, then re-add the integration.
             return self.async_abort(reason="no_devices_found")
 
-        errors: dict[str, str] = {}
-
         if user_input is not None:
             address = user_input[CONF_ADDRESS]
             self._discovery_info = self._discovered_devices[address]
@@ -155,7 +153,7 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_ADDRESS): vol.In(device_labels),
             }
         )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(step_id="user", data_schema=schema)
 
     # ------------------------------------------------------------------
     # Confirm step
@@ -183,7 +181,8 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         info = self._discovery_info
         address = info.address if info else ""
         name = (info.name or address) if info else address
-        product_type = self._get_product_type(info)
+        prod_id = self._get_production_info_id(info)
+        product_type = PRODUCTION_INFO.get(prod_id, f"Unknown (type {prod_id})")
 
         return self.async_show_form(
             step_id="confirm",
@@ -277,48 +276,19 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
 
     @staticmethod
     def _get_production_info_id(info: BluetoothServiceInfoBleak | None) -> int:
-        """
-        Extract ProductionInfo ID from BLE advertising data.
+        """Extract ProductionInfo ID from BLE advertising data.
 
-        bytes[0] & 0x0F of manufacturer data gives the product type.
+        ``bytes[0] & 0x07`` of manufacturer data gives the product type (0–7).
+        Defined types are in ``PRODUCTION_INFO``.
 
-        Args:
-            info: BLE service info, or None.
-
-        Returns:
-            Product type ID (0–7), defaults to 0.
+        Returns 0 if *info* is None or manufacturer data is absent.
         """
         if info is None:
             return 0
         payload = info.manufacturer_data.get(MANUFACTURER_ID, b"")
         if not payload:
             return 0
-        return (payload[0] & 0x0F) % 8
-
-    @staticmethod
-    def _get_product_type(info: BluetoothServiceInfoBleak | None) -> str:
-        """
-        Return human-readable product type string.
-
-        Args:
-            info: BLE service info, or None.
-
-        Returns:
-            Product type name (e.g. "ShutterEaris") or "Unknown (type N)" for unknown IDs.
-        """
-        if info is None:
-            return "Unknown"
-        payload = info.manufacturer_data.get(MANUFACTURER_ID, b"")
-        LOGGER.debug(
-            "Manufacturer data for %s: %s (keys: %s)",
-            info.address,
-            payload.hex() if payload else "(empty)",
-            list(info.manufacturer_data.keys()),
-        )
-        if not payload:
-            return "Unknown (no manufacturer data)"
-        prod_id = (payload[0] & 0x0F) % 8
-        return PRODUCTION_INFO.get(prod_id, f"Unknown (type {prod_id})")
+        return payload[0] & 0x07
 
     @staticmethod
     def async_get_options_flow(
