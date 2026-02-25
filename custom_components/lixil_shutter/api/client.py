@@ -1,8 +1,17 @@
 """
 BLE GATT client for LIXIL MyWindow shutter.
 
-Handles BLE connection, command sending, and status notification
-via bleak library (bundled with Home Assistant).
+Manages the full BLE lifecycle for the shutter:
+- On-demand connection: ``_ensure_connected`` connects only when a command or
+  status poll is issued, avoiding a permanently held BLE link.
+- Idle disconnect timer: after each command the client schedules an automatic
+  disconnect (``_IDLE_DISCONNECT_SEC`` or the caller-supplied ``idle_after``
+  value) so other BLE clients (e.g. the Android app) can connect in the gap.
+- GATT notifications: status updates pushed by the device are delivered to the
+  registered callback without polling.
+
+Underlying BLE library: bleak / bleak-retry-connector (bundled with HA).
+Pairing uses BlueZ D-Bus Pair() via dbus-fast (transitive HA dependency).
 """
 
 from __future__ import annotations
@@ -44,6 +53,7 @@ from custom_components.lixil_shutter.const import (
 )
 
 _PAIRING_AGENT_PATH = "/com/lixil_shutter/pairing_agent"
+_IDLE_DISCONNECT_SEC: float = 30.0
 
 
 class _JustWorksAgent(ServiceInterface):
@@ -115,16 +125,18 @@ class LixilShutterBleClient:
     BLE GATT client for LIXIL MyWindow shutter.
 
     Manages the full BLE lifecycle:
-    - Connect / disconnect
-    - Enable GATT notifications on UCG_IN characteristic
-    - Send commands to UCG_OUT characteristic (press + release pattern)
-    - Parse status notifications
+    - On-demand connection via ``_ensure_connected`` (no manual ``connect()`` needed
+      for normal operation)
+    - Idle-disconnect timer that releases the BLE link after inactivity
+    - GATT notifications on UCG_IN characteristic for device-pushed status updates
+    - Commands written to UCG_OUT characteristic using press + release pattern
+    - BLE-level pairing via BlueZ D-Bus Pair()
 
-    Usage:
+    Typical usage (cover entity):
         client = LixilShutterBleClient(ble_device)
-        await client.connect(status_callback=my_callback)
-        await client.open()
-        await client.disconnect()
+        client.set_status_callback(my_callback)  # register once
+        await client.open(idle_after=30)          # connects on demand, auto-disconnects
+        await client.request_status()             # connect → request → idle disconnect
     """
 
     def __init__(self, ble_device: BLEDevice) -> None:
@@ -140,6 +152,8 @@ class LixilShutterBleClient:
         self._status_callback: Callable[[str], None] | None = None
         self._connected = False
         self._notify_active = False  # True only when start_notify() was called
+        self._idle_task: asyncio.Task[None] | None = None
+        self._disconnecting: bool = False  # True only during intentional disconnect
 
     # ------------------------------------------------------------------
     # Connection management
@@ -235,28 +249,88 @@ class LixilShutterBleClient:
             msg = f"Failed to connect to {self.address}: {exc}"
             raise LixilShutterBleClientCommunicationError(msg) from exc
 
+    def set_status_callback(self, callback: Callable[[str], None] | None) -> None:
+        """Set (or clear) the notification callback without reconnecting."""
+        self._status_callback = callback
+
+    async def _ensure_connected(self) -> None:
+        """Reuse existing BLE connection or establish a new one.
+
+        If already connected, cancels the idle-disconnect timer so the
+        connection is kept alive for another round.  If not connected,
+        performs a full connect() using the currently stored callback.
+        """
+        self._cancel_idle_disconnect()
+        if self.is_connected:
+            return
+        await self.connect(status_callback=self._status_callback)
+
+    def _schedule_idle_disconnect(self, delay: float | None = None) -> None:
+        """Schedule a disconnect after ``delay`` seconds of inactivity.
+
+        If *delay* is None the module-level ``_IDLE_DISCONNECT_SEC`` constant
+        is used.  Commands pass their ``idle_after`` argument here so the
+        post-command monitoring window can be longer than the default idle.
+        """
+        self._cancel_idle_disconnect()
+        self._idle_task = asyncio.create_task(self._idle_disconnect_task(delay or _IDLE_DISCONNECT_SEC))
+
+    def _cancel_idle_disconnect(self) -> None:
+        """Cancel any pending idle-disconnect timer."""
+        if self._idle_task is not None and not self._idle_task.done():
+            self._idle_task.cancel()
+        self._idle_task = None
+
+    async def _idle_disconnect_task(self, delay: float) -> None:
+        """Disconnect after *delay* seconds."""
+        try:
+            await asyncio.sleep(delay)
+            LOGGER.debug("[idle] disconnecting %s after %.0fs inactivity", self.address, delay)
+            await self.disconnect()
+        except asyncio.CancelledError:
+            pass
+
     async def disconnect(self) -> None:
-        """Disconnect from the shutter and clean up resources."""
+        """Disconnect from the shutter and release all BLE/GATT resources.
+
+        Cancels the idle-disconnect timer, stops GATT notifications, and closes
+        the BLE connection.  Safe to call even if not currently connected.
+        Sets ``_disconnecting`` so ``_on_disconnected`` suppresses the
+        unexpected-disconnect warning.
+        """
+        self._cancel_idle_disconnect()
+        self._disconnecting = True
         self._connected = False
-        if self._client and self._client.is_connected:
-            if self._notify_active:
+        try:
+            if self._client and self._client.is_connected:
+                if self._notify_active:
+                    try:
+                        await self._client.stop_notify(CHAR_UCG_IN_UUID)
+                    except Exception as exc:  # noqa: BLE001
+                        LOGGER.debug("Error stopping notify on %s: %s", self.address, exc)
                 try:
-                    await self._client.stop_notify(CHAR_UCG_IN_UUID)
+                    await self._client.disconnect()
                 except Exception as exc:  # noqa: BLE001
-                    LOGGER.debug("Error stopping notify on %s: %s", self.address, exc)
-            try:
-                await self._client.disconnect()
-            except Exception as exc:  # noqa: BLE001
-                LOGGER.debug("Error during disconnect from %s: %s", self.address, exc)
-        self._notify_active = False
-        self._client = None
+                    LOGGER.debug("Error during disconnect from %s: %s", self.address, exc)
+        finally:
+            self._notify_active = False
+            self._client = None
+            self._disconnecting = False
         LOGGER.debug("Disconnected from shutter %s", self.address)
 
     def _on_disconnected(self, _client: BleakClient) -> None:
-        """Handle unexpected BLE disconnection."""
-        LOGGER.warning("Shutter %s disconnected unexpectedly", self.address)
+        """BleakClient disconnection callback (called on the event loop).
+
+        Logs a warning for unexpected disconnects (device out of range, BLE
+        error).  Expected disconnects triggered by ``disconnect()`` set
+        ``_disconnecting=True`` beforehand to suppress the warning.
+        Clears ``_notify_active`` so the next ``connect()`` can call
+        ``start_notify`` without hitting a stale BlueZ "Notify acquired" error.
+        """
+        if not self._disconnecting:
+            LOGGER.warning("Shutter %s disconnected unexpectedly", self.address)
+        LOGGER.debug("[_on_disconnected] disconnecting=%s notify_active=%s", self._disconnecting, self._notify_active)
         self._connected = False
-        LOGGER.debug("[_on_disconnected] notify_active=%s", self._notify_active)
         # bleak's stop_notify() raises BleakError("Not connected") when
         # is_connected=False, so we cannot call StopNotify here.
         # The proactive stop_notify() at the start of the next connect() will
@@ -345,30 +419,56 @@ class LixilShutterBleClient:
     # Command sending
     # ------------------------------------------------------------------
 
-    async def open(self) -> None:
-        """Send open (up) command (keyCode=0x03)."""
-        await self._execute(KEY_CODE_OPEN)
+    async def open(self, idle_after: float | None = None) -> None:
+        """Open the shutter fully (keyCode=0x03).
 
-    async def close(self) -> None:
-        """Send close (down) command (keyCode=0x04)."""
-        await self._execute(KEY_CODE_CLOSE)
+        Connects on demand, sends press+release, then schedules an idle
+        disconnect after ``idle_after`` seconds (default: ``_IDLE_DISCONNECT_SEC``).
+        """
+        await self._execute(KEY_CODE_OPEN, idle_after=idle_after)
 
-    async def stop(self) -> None:
-        """Send stop command (keyCode=0x05)."""
-        await self._execute(KEY_CODE_STOP)
+    async def close(self, idle_after: float | None = None) -> None:
+        """Close the shutter fully (keyCode=0x04).
 
-    async def memory_position(self) -> None:
-        """Send memory (favourite) position command (keyCode=0x06, subCode=0x02)."""
-        await self._execute(KEY_CODE_POSITION, SUB_CODE_MEMORY)
+        Connects on demand, sends press+release, then schedules an idle
+        disconnect after ``idle_after`` seconds (default: ``_IDLE_DISCONNECT_SEC``).
+        """
+        await self._execute(KEY_CODE_CLOSE, idle_after=idle_after)
 
-    async def ventilation_position(self) -> None:
-        """Send ventilation (saifu) position command (keyCode=0x06, subCode=0x01)."""
-        await self._execute(KEY_CODE_POSITION, SUB_CODE_VENTILATION)
+    async def stop(self, idle_after: float | None = None) -> None:
+        """Stop the shutter mid-travel (keyCode=0x05).
 
-    async def request_status(self) -> None:
-        """Send status request command (keyState=0x03, keyCode=0x0B)."""
+        Connects on demand, sends press+release, then schedules an idle
+        disconnect after ``idle_after`` seconds (default: ``_IDLE_DISCONNECT_SEC``).
+        """
+        await self._execute(KEY_CODE_STOP, idle_after=idle_after)
+
+    async def memory_position(self, idle_after: float | None = None) -> None:
+        """Move to the stored memory (favourite) position (keyCode=0x06, subCode=0x02).
+
+        Connects on demand, sends press+release, then schedules an idle
+        disconnect after ``idle_after`` seconds (default: ``_IDLE_DISCONNECT_SEC``).
+        """
+        await self._execute(KEY_CODE_POSITION, SUB_CODE_MEMORY, idle_after=idle_after)
+
+    async def ventilation_position(self, idle_after: float | None = None) -> None:
+        """Move to the ventilation (saifu) position (keyCode=0x06, subCode=0x01).
+
+        Connects on demand, sends press+release, then schedules an idle
+        disconnect after ``idle_after`` seconds (default: ``_IDLE_DISCONNECT_SEC``).
+        """
+        await self._execute(KEY_CODE_POSITION, SUB_CODE_VENTILATION, idle_after=idle_after)
+
+    async def request_status(self, idle_after: float | None = None) -> None:
+        """Send status request command (keyState=0x03, keyCode=0x0B).
+
+        Connects on demand if not already connected, then schedules an idle
+        disconnect so the connection is released after inactivity.
+        """
+        await self._ensure_connected()
         cmd = self._build_command(KEY_STATE_RELEASE, KEY_CODE_STATUS, SUB_CODE_DEFAULT, self._next_tag())
         await self._write(cmd)
+        self._schedule_idle_disconnect(idle_after)
 
     # ------------------------------------------------------------------
     # Pairing
@@ -531,11 +631,12 @@ class LixilShutterBleClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _execute(self, key_code: int, sub_code: int = SUB_CODE_DEFAULT) -> None:
+    async def _execute(
+        self, key_code: int, sub_code: int = SUB_CODE_DEFAULT, *, idle_after: float | None = None
+    ) -> None:
         """
         Send a press+release command pair to the shutter.
 
-        Mirrors ActionHandler.execute():
         1. Send press bytes  (keyState=KEY_STATE_PRESS)
         2. Wait RELEASE_DELAY_SEC (100 ms)
         3. Send release bytes (keyState=KEY_STATE_RELEASE)
@@ -552,6 +653,7 @@ class LixilShutterBleClient:
         release = self._build_command(KEY_STATE_RELEASE, key_code, sub_code, tag)
         try:
             async with asyncio.timeout(COMMAND_TIMEOUT_SEC):
+                await self._ensure_connected()
                 await self._write(press)
                 await asyncio.sleep(RELEASE_DELAY_SEC)
                 await self._write(release)
@@ -560,16 +662,25 @@ class LixilShutterBleClient:
         except Exception as exc:
             msg = f"Command execution failed on {self.address}: {exc}"
             raise LixilShutterBleClientCommunicationError(msg) from exc
+        self._schedule_idle_disconnect(idle_after)
 
     async def _write(self, data: bytes) -> None:
-        """Write bytes to UCG_OUT characteristic."""
+        """Write *data* to the UCG_OUT GATT characteristic (write-with-response).
+
+        Raises:
+            LixilShutterBleClientCommunicationError: If not connected.
+        """
         if not self._client or not self._client.is_connected:
             msg = f"Not connected to {self.address}"
             raise LixilShutterBleClientCommunicationError(msg)
         await self._client.write_gatt_char(CHAR_UCG_OUT_UUID, data, response=True)
 
     def _next_tag(self) -> int:
-        """Return next tag byte (0–99 cycling), increments internal counter."""
+        """Return the next tag byte (cycles 0–99) and increment the counter.
+
+        The tag byte is the 4th byte of each command frame; it lets the device
+        match press and release frames from the same command invocation.
+        """
         tag = self._tag % 100
         self._tag += 1
         return tag

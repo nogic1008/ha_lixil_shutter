@@ -21,6 +21,7 @@ from typing import Any
 import voluptuous as vol
 
 from custom_components.lixil_shutter.api import LixilShutterBleClient, LixilShutterBleClientCommunicationError
+from custom_components.lixil_shutter.config_flow_handler.options_flow import LixilShutterOptionsFlow
 from custom_components.lixil_shutter.const import (
     CONF_ADDRESS,
     CONF_PRODUCTION_INFO,
@@ -337,6 +338,13 @@ class LixilShutterConfigFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         # The upper nibble can be non-zero (e.g. 0xa9 → nibble=9 → 9%8=1 = ShutterEaris).
         prod_id = (payload[0] & 0x0F) % 8
         return PRODUCTION_INFO.get(prod_id, f"Unknown (type {prod_id})")
+
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> LixilShutterOptionsFlow:
+        """Return the options flow handler."""
+        return LixilShutterOptionsFlow()
 
 
 __all__ = ["LixilShutterConfigFlowHandler"]
