@@ -1,8 +1,13 @@
 """
 Options flow for lixil_shutter.
 
-This module implements the options flow that allows users to modify settings
-after the initial configuration, such as update intervals and debug settings.
+Allows users to adjust the following settings after initial setup:
+
+- **Poll interval** (``CONF_POLL_INTERVAL``): How often HA requests the current
+  shutter state over BLE (default 300 s / 5 minutes).
+- **Command monitor window** (``CONF_COMMAND_MONITOR``): How long the BLE
+  connection is kept open after an open/close/stop command so that the
+  device's completion notification can arrive (default 30 s).
 
 For more information:
 https://developers.home-assistant.io/docs/config_entries_options_flow_handler
@@ -18,34 +23,32 @@ from homeassistant import config_entries
 
 class LixilShutterOptionsFlow(config_entries.OptionsFlow):
     """
-    Handle options flow for the integration.
+    Options flow for the LIXIL shutter integration.
 
-    This class manages the options that users can modify after initial setup,
-    such as update intervals and debug settings.
+    Presents a single-step form (``async_step_init``) with two numeric inputs:
+    - Poll interval: BLE status-poll frequency in seconds.
+    - Command monitor window: post-command BLE connection hold time in seconds.
 
-    The options flow always starts with async_step_init and provides a single
-    form for all configurable options.
-
-    For more information:
-    https://developers.home-assistant.io/docs/config_entries_options_flow_handler
+    Changes take effect immediately — the cover entity re-schedules its poll
+    timer and updates its ``_monitor_sec`` value without restarting HA.
     """
 
     async def async_step_init(
         self,
         user_input: dict[str, Any] | None = None,
     ) -> config_entries.ConfigFlowResult:
-        """
-        Manage the options for the integration.
+        """Show the options form or save submitted values.
 
-        This is the entry point for the options flow, allowing users to
-        configure advanced settings like update interval and debugging.
+        Entry point for the options flow.  Displays a form pre-filled with
+        the current option values.  On submission, persists the new values
+        to the config entry; the cover entity's update listener applies them
+        without requiring an HA restart.
 
         Args:
-            user_input: The user input from the options form, or None for initial display.
+            user_input: Submitted form data, or None to display the form.
 
         Returns:
-            The config flow result, either showing a form or creating an options entry.
-
+            A form result on first call; a completed entry result on submit.
         """
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
