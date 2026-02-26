@@ -59,7 +59,7 @@ SUB_CODE_MEMORY = 0x02  # Memory (favourite) position
 # Status strings (bytes[2] bit analysis)
 STATUS_OPEN = "open"  # bytes[2] bit4 = 0
 STATUS_CLOSED = "closed"  # bytes[2] bit4 = 1
-STATUS_MIN = "min"  # bytes[2] bit5 = 1 (fully closed / minimum position)
+STATUS_VENTILATION = "ventilation"  # bytes[2] bit5 = 1 (flap slats open / saifu position)
 STATUS_UNKNOWN = "unknown"
 
 # Product type (advertising bytes[0] & 0x07)

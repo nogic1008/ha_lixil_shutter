@@ -44,9 +44,9 @@ from custom_components.lixil_shutter.const import (
     LOGGER,
     RELEASE_DELAY_SEC,
     STATUS_CLOSED,
-    STATUS_MIN,
     STATUS_OPEN,
     STATUS_UNKNOWN,
+    STATUS_VENTILATION,
     SUB_CODE_DEFAULT,
     SUB_CODE_MEMORY,
     SUB_CODE_VENTILATION,
@@ -793,28 +793,26 @@ class LixilShutterBleClient:
         """
         Parse status from notification bytes[2].
 
-        Bit analysis (mirrors ShutterClient.fetchStatus):
-          bits[5] == '1' → STATUS_MIN  (fully closed / minimum)
-          bits[4] == '0' → STATUS_OPEN
-          bits[4] == '1' → STATUS_CLOSED
+        Bit analysis:
+          bit2 set (byte & 0x04) → STATUS_VENTILATION  (flap slats open / saifu)
+          bit3 set (byte & 0x08) → STATUS_CLOSED
+          bit3 clear             → STATUS_OPEN
 
         Args:
             data: Raw notification bytes (must have at least 3 bytes for status).
 
         Returns:
-            One of STATUS_OPEN, STATUS_CLOSED, STATUS_MIN, STATUS_UNKNOWN.
+            One of STATUS_OPEN, STATUS_CLOSED, STATUS_VENTILATION.
+            STATUS_UNKNOWN is returned only if *data* is too short (< 3 bytes).
         """
         if len(data) < 3:
             return STATUS_UNKNOWN
         byte = data[2] & 0xFF
-        bits = format(byte, "08b")  # MSB on the left, e.g. "01001000"
-        if bits[5] == "1":
-            return STATUS_MIN
-        if bits[4] == "0":
-            return STATUS_OPEN
-        if bits[4] == "1":
+        if byte & 0x04:  # bit2 set → ventilation (saifu)
+            return STATUS_VENTILATION
+        if byte & 0x08:  # bit3 set → closed
             return STATUS_CLOSED
-        return STATUS_UNKNOWN
+        return STATUS_OPEN  # bit3 clear → open
 
 
 __all__ = [

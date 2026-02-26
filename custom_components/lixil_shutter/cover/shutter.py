@@ -28,8 +28,8 @@ from custom_components.lixil_shutter.const import (
     LOGGER,
     PRODUCTION_INFO,
     STATUS_CLOSED,
-    STATUS_MIN,
     STATUS_OPEN,
+    STATUS_VENTILATION,
 )
 from homeassistant.components.cover import CoverDeviceClass, CoverEntity, CoverEntityFeature, CoverState
 from homeassistant.core import callback
@@ -44,7 +44,15 @@ if TYPE_CHECKING:
 _STATUS_TO_COVER_STATE: dict[str, CoverState] = {
     STATUS_OPEN: CoverState.OPEN,
     STATUS_CLOSED: CoverState.CLOSED,
-    STATUS_MIN: CoverState.CLOSED,
+    STATUS_VENTILATION: CoverState.CLOSED,
+}
+
+# Tilt position (0–100) for each device status.
+# STATUS_OPEN has no defined tilt (shutter fully retracted).
+# STATUS_CLOSED: slats fully closed. STATUS_VENTILATION: slats fully open.
+_STATUS_TO_TILT_POSITION: dict[str, int] = {
+    STATUS_CLOSED: 0,
+    STATUS_VENTILATION: 100,
 }
 
 
@@ -86,6 +94,7 @@ class LixilShutterCover(CoverEntity):
 
         # HA entity attributes
         self._attr_is_closed: bool | None = None  # None = state unknown / unavailable
+        self._attr_current_cover_tilt_position: int | None = None  # 0 = closed, 100 = ventilation
         self._attr_available: bool = False  # True after first successful BLE operation
         self._attr_unique_id = f"{entry.entry_id}_cover"
         self._attr_device_info = self._build_device_info()
@@ -142,9 +151,11 @@ class LixilShutterCover(CoverEntity):
         Updates ``_attr_is_*`` fields and writes the new state to HA.
 
         Args:
-            status: One of STATUS_OPEN, STATUS_CLOSED, STATUS_MIN, STATUS_UNKNOWN.
+            status: One of STATUS_OPEN, STATUS_CLOSED, STATUS_VENTILATION, STATUS_UNKNOWN.
         """
         self._apply_state(_STATUS_TO_COVER_STATE.get(status))
+        if self._client.has_ventilation:
+            self._attr_current_cover_tilt_position = _STATUS_TO_TILT_POSITION.get(status)
         self._attr_available = True
         self.async_write_ha_state()
 
@@ -230,10 +241,13 @@ class LixilShutterCover(CoverEntity):
         """Set ``_attr_is_closed``, ``_attr_is_opening``, ``_attr_is_closing`` from *state*.
 
         Passing ``None`` clears all state fields (treated as unavailable).
+        Tilt position is also cleared when *state* is ``None`` (error / optimistic motion).
         """
         self._attr_is_closed = None if state is None else state == CoverState.CLOSED
         self._attr_is_opening = state == CoverState.OPENING
         self._attr_is_closing = state == CoverState.CLOSING
+        if state is None:
+            self._attr_current_cover_tilt_position = None
 
     async def _run_command(
         self,
