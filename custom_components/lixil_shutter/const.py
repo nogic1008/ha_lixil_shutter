@@ -33,7 +33,7 @@ PAIRING_MODE_BIT = 0x80
 CONNECT_TIMEOUT_SEC = 10.0
 COMMAND_TIMEOUT_SEC = 3.0
 
-# Key release delay (100ms) — matches ActionHandler.execute()
+# Key release delay (100ms)
 RELEASE_DELAY_SEC = 0.1
 
 # Command definitions
@@ -53,13 +53,13 @@ KEY_CODE_WRITE_NAME = 0x0C  # Write device name (pairing)
 
 # subCode values for KEY_CODE_POSITION
 SUB_CODE_DEFAULT = 0x00  # Default / unused
-SUB_CODE_VENTILATION = 0x01  # Ventilation (saifu) position
-SUB_CODE_MEMORY = 0x02  # Memory (favourite) position
+SUB_CODE_VENTILATION = 0x01  # Normal types: move to memory position; ventilation types: open flap slats (採風)
+SUB_CODE_MEMORY = 0x02  # Ventilation types only: move to memory position
 
 # Status strings (bytes[2] bit analysis)
-STATUS_OPEN = "open"  # bytes[2] bit4 = 0
-STATUS_CLOSED = "closed"  # bytes[2] bit4 = 1
-STATUS_VENTILATION = "ventilation"  # bytes[2] bit5 = 1 (flap slats open / saifu position)
+STATUS_OPEN = "open"  # bytes[2] bit3 (0x08) = 0
+STATUS_CLOSED = "closed"  # bytes[2] bit3 (0x08) = 1
+STATUS_VENTILATION = "ventilation"  # bytes[2] bit2 (0x04) = 1 (flap slats open / 採風)
 STATUS_UNKNOWN = "unknown"
 
 # Product type (advertising bytes[0] & 0x07)

@@ -489,9 +489,6 @@ class LixilShutterBleClient:
         Note: the flap slats are also closed as part of the shutter's normal
         close motion — sending the close command closes both the shutter
         and the flap slats.
-
-        Raises:
-            LixilShutterBleClientCommunicationError: On GATT write failure.
         """
         await self._execute(KEY_CODE_POSITION, SUB_CODE_VENTILATION, press_only=True, idle_after=idle_after)
 
@@ -505,9 +502,6 @@ class LixilShutterBleClient:
         No HA cover feature currently exposes this.
         Connects on demand, then schedules an idle disconnect after ``idle_after``
         seconds (default: ``_IDLE_DISCONNECT_SEC``).
-
-        Raises:
-            LixilShutterBleClientCommunicationError: On GATT write failure.
         """
         sub_code = SUB_CODE_VENTILATION if self._production_info_id in _NORMAL_TYPE_IDS else SUB_CODE_MEMORY
         await self._execute(KEY_CODE_POSITION, sub_code, press_only=True, idle_after=idle_after)
@@ -754,9 +748,6 @@ class LixilShutterBleClient:
         """
         Build 4-byte GATT command.
 
-        Mirrors ShutterClient.makeCommand():
-          bytes = [keyState, keyCode, subCode, tag]
-
         Args:
             key_state: KEY_STATE_PRESS or KEY_STATE_RELEASE.
             key_code:  Key code byte (e.g. KEY_CODE_OPEN).
@@ -776,7 +767,7 @@ class LixilShutterBleClient:
         """
         Handle incoming GATT notification from UCG_IN.
 
-        Routing (mirrors ShutterClient$createGatt$1.onCharacteristicChanged):
+        Routing:
         - data length < 6  → status notification, parse and call status_callback
         - any length       → command executed notification (ignored here)
 
