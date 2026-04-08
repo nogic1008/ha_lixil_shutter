@@ -9,9 +9,13 @@ Manages the full BLE lifecycle for the shutter:
   value) so other BLE clients can connect in the gap.
 - GATT notifications: status updates pushed by the device are delivered to the
   registered callback without polling.
+- Bluetooth Proxy support (ESPHome/ESP32): detected via BLEDevice.details;
+  D-Bus operations are skipped and the proxy handles BLE-level SMP bonding.
 
 Underlying BLE library: bleak / bleak-retry-connector (bundled with HA).
-Pairing uses BlueZ D-Bus Pair() via dbus-fast (transitive HA dependency).
+For local BlueZ adapters, pairing uses BlueZ D-Bus Pair() via dbus-fast
+(transitive HA dependency).  For Bluetooth Proxy devices, pairing is handled
+by the proxy's ESP32 chip through bleak's establish_connection.
 """
 
 from __future__ import annotations
@@ -169,9 +173,37 @@ class LixilShutterBleClient:
         self._idle_task: asyncio.Task[None] | None = None
         self._disconnecting: bool = False  # True only during intentional disconnect
 
+    def update_ble_device(self, ble_device: BLEDevice) -> None:
+        """Update the stored BLEDevice with a fresher instance from the HA scanner.
+
+        Called whenever HA's bluetooth component reports a new advertisement for
+        this device.  Keeps the client pointing at the best available scanner
+        (local adapter or Bluetooth Proxy) so ``establish_connection`` uses
+        up-to-date routing information.
+
+        Args:
+            ble_device: Latest BLEDevice from ``async_ble_device_from_address``.
+        """
+        self._ble_device = ble_device
+
     # ------------------------------------------------------------------
     # Connection management
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_local_bluez_device(ble_device: BLEDevice) -> bool:
+        """Return True if *ble_device* is managed by the local BlueZ adapter.
+
+        On BlueZ (Linux), ``BLEDevice.details`` contains a D-Bus object path of
+        the form ``{"path": "/org/bluez/hciX/dev_..."}``.  Bluetooth Proxy
+        devices (ESPHome/ESP32) have a different ``details`` structure without
+        this path, so they are identified as non-local.
+        """
+        details = getattr(ble_device, "details", None)
+        if not isinstance(details, dict):
+            return False
+        path = details.get("path", "")
+        return isinstance(path, str) and "/org/bluez/" in path
 
     @property
     def address(self) -> str:
@@ -222,7 +254,10 @@ class LixilShutterBleClient:
 
         # Clean up any existing client.
         if self._client is not None:
-            LOGGER.debug("[connect] cleaning up existing client (notify_active=%s)", self._notify_active)
+            LOGGER.debug(
+                "[connect] cleaning up existing client (notify_active=%s)",
+                self._notify_active,
+            )
             if self._notify_active:
                 with suppress(Exception):
                     await self._client.stop_notify(CHAR_UCG_IN_UUID)
@@ -242,38 +277,76 @@ class LixilShutterBleClient:
             try:
                 await self._client.start_notify(CHAR_UCG_IN_UUID, self._on_notification)
             except Exception as start_exc:
-                if "NotPermitted" not in str(start_exc) or "Notify acquired" not in str(start_exc):
+                exc_str = str(start_exc)
+                if "Insufficient authentication" in exc_str:
+                    # BLE peripheral is requesting encryption/bonding (error=5).
+                    # The correct BLE flow is to initiate SMP pairing on this
+                    # active connection (not a separate one) while the device is
+                    # already waiting for the security request.  After pair()
+                    # the link is encrypted and start_notify will succeed.
+                    LOGGER.debug(
+                        "[connect] Insufficient authentication for %s — initiating pair() on active connection",
+                        self.address,
+                    )
+                    await self._client.pair()
+                    LOGGER.debug(
+                        "[connect] pair() completed for %s, retrying start_notify",
+                        self.address,
+                    )
+                    await self._client.start_notify(CHAR_UCG_IN_UUID, self._on_notification)
+                elif "NotPermitted" not in exc_str or "Notify acquired" not in exc_str:
                     raise
-                # Stale BlueZ "Notify acquired" flag from a previous HA session.
-                # Fix: clear via D-Bus StopNotify, reconnect, retry.
-                LOGGER.debug(
-                    "[connect] NotPermitted Notify acquired for %s — clearing via D-Bus StopNotify",
-                    self.address,
-                )
-                await self._dbus_stop_notify_for_device()
-                with suppress(Exception):
-                    await self._client.disconnect()
-                self._client = None
-                LOGGER.debug("[connect] reconnecting after StopNotify for %s", self.address)
-                self._client = await establish_connection(
-                    BleakClientWithServiceCache,
-                    self._ble_device,
-                    self._ble_device.address,
-                    disconnected_callback=self._on_disconnected,
-                )
-                LOGGER.debug("[connect] reconnect OK for %s, retrying start_notify", self.address)
-                await self._client.start_notify(CHAR_UCG_IN_UUID, self._on_notification)
+                else:
+                    # Stale "Notify acquired" flag from a previous HA session.
+                    if self._is_local_bluez_device(self._ble_device):
+                        # BlueZ persists the Notify-acquired flag across process restarts;
+                        # clear it via D-Bus StopNotify before reconnecting.
+                        LOGGER.debug(
+                            "[connect] NotPermitted Notify acquired for %s — clearing via D-Bus StopNotify",
+                            self.address,
+                        )
+                        await self._dbus_stop_notify_for_device()
+                    else:
+                        # Bluetooth Proxy devices do not have BlueZ stale state;
+                        # just reconnect and retry start_notify directly.
+                        LOGGER.debug(
+                            "[connect] NotPermitted Notify acquired for %s (proxy device) — reconnecting",
+                            self.address,
+                        )
+                    with suppress(Exception):
+                        await self._client.disconnect()
+                    self._client = None
+                    LOGGER.debug("[connect] reconnecting after StopNotify for %s", self.address)
+                    self._client = await establish_connection(
+                        BleakClientWithServiceCache,
+                        self._ble_device,
+                        self._ble_device.address,
+                        disconnected_callback=self._on_disconnected,
+                    )
+                    LOGGER.debug(
+                        "[connect] reconnect OK for %s, retrying start_notify",
+                        self.address,
+                    )
+                    await self._client.start_notify(CHAR_UCG_IN_UUID, self._on_notification)
             self._notify_active = True
             self._connected = True
             LOGGER.debug("[connect] done: connected to %s", self.address)
         except Exception as exc:
-            LOGGER.debug("[connect] exception for %s: %s (notify_active=%s)", self.address, exc, self._notify_active)
+            LOGGER.debug(
+                "[connect] exception for %s: %s (notify_active=%s)",
+                self.address,
+                exc,
+                self._notify_active,
+            )
             self._connected = False
             if self._client is not None:
                 if self._notify_active:
                     with suppress(Exception):
                         await self._client.stop_notify(CHAR_UCG_IN_UUID)
-                    LOGGER.debug("[connect] stop_notify called in except block for %s", self.address)
+                    LOGGER.debug(
+                        "[connect] stop_notify called in except block for %s",
+                        self.address,
+                    )
                 self._notify_active = False
                 with suppress(Exception):
                     await self._client.disconnect()
@@ -361,7 +434,11 @@ class LixilShutterBleClient:
         """
         if not self._disconnecting:
             LOGGER.warning("Shutter %s disconnected unexpectedly", self.address)
-        LOGGER.debug("[_on_disconnected] disconnecting=%s notify_active=%s", self._disconnecting, self._notify_active)
+        LOGGER.debug(
+            "[_on_disconnected] disconnecting=%s notify_active=%s",
+            self._disconnecting,
+            self._notify_active,
+        )
         self._connected = False
         # bleak's stop_notify() raises BleakError("Not connected") when
         # is_connected=False, so we cannot call StopNotify here.
@@ -430,7 +507,11 @@ class LixilShutterBleClient:
                 )
                 return
 
-            LOGGER.debug("[dbus_stop_notify] calling StopNotify for %s path=%s", self.address, char_path)
+            LOGGER.debug(
+                "[dbus_stop_notify] calling StopNotify for %s path=%s",
+                self.address,
+                char_path,
+            )
             stop_reply = await bus.call(
                 DBusMessage(
                     destination="org.bluez",
@@ -439,7 +520,11 @@ class LixilShutterBleClient:
                     member="StopNotify",
                 )
             )
-            LOGGER.debug("[dbus_stop_notify] StopNotify reply for %s: %s", self.address, stop_reply)
+            LOGGER.debug(
+                "[dbus_stop_notify] StopNotify reply for %s: %s",
+                self.address,
+                stop_reply,
+            )
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("[dbus_stop_notify] error for %s: %s", self.address, exc)
         finally:
@@ -490,7 +575,12 @@ class LixilShutterBleClient:
         close motion — sending the close command closes both the shutter
         and the flap slats.
         """
-        await self._execute(KEY_CODE_POSITION, SUB_CODE_VENTILATION, press_only=True, idle_after=idle_after)
+        await self._execute(
+            KEY_CODE_POSITION,
+            SUB_CODE_VENTILATION,
+            press_only=True,
+            idle_after=idle_after,
+        )
 
     async def move_to_memory_position(self, idle_after: float | None = None) -> None:
         """Move to the stored memory position.
@@ -523,24 +613,34 @@ class LixilShutterBleClient:
 
     async def do_pairing(self) -> None:
         """
-        Perform BLE-level pairing via BlueZ D-Bus Pair().
+        Perform BLE-level pairing.
 
-        Strategy:
-        1. Register a Just-Works (NoInputNoOutput) pairing agent first.
-        2. RemoveDevice — wipe stale BlueZ cache.
-        3. Pre-connect via habluetooth (BLE).
-        4. Call Pair() WHILE CONNECTED — BlueZ runs SMP over the existing LE
-           link.  The Just-Works agent auto-confirms the bond.
-        5. Disconnect.
-        6. UnregisterAgent.
+        Routing:
+        - **Local BlueZ adapter** (Raspberry Pi built-in Bluetooth): uses the
+          BlueZ D-Bus ``Pair()`` API for explicit Just-Works bonding.  Strategy:
+          1. Register a Just-Works (NoInputNoOutput) pairing agent.
+          2. RemoveDevice — wipe stale BlueZ cache.
+          3. Connect via habluetooth (keeps the link alive for Pair()).
+          4. Call Pair() while connected — BlueZ runs SMP over the LE link.
+          5. Disconnect and unregister the agent.
 
-        Calling Pair() after disconnect caused BLE→BR/EDR fallback (Page
-        Timeout) even when AddressType=public was correctly set.  Keeping the
-        connection alive avoids that path entirely.
+        - **Bluetooth Proxy** (ESPHome/ESP32): D-Bus is not available for the
+          remote device.  The proxy's ESP32 chip handles BLE-level SMP bonding
+          automatically when a connection is established.  We verify connectivity
+          via ``establish_connection`` and then disconnect — the proxy takes care
+          of the security handshake.
 
         Raises:
             LixilShutterBleClientCommunicationError: On connection or pairing failure.
         """
+        if not self._is_local_bluez_device(self._ble_device):
+            LOGGER.debug(
+                "[do_pairing] %s is a Bluetooth Proxy device — verifying BLE connectivity",
+                self.address,
+            )
+            await self._verify_proxy_connection()
+            return
+
         addr_upper = self.address.upper().replace(":", "_")
         device_path = f"/org/bluez/hci0/dev_{addr_upper}"
         adapter_path = "/org/bluez/hci0"
@@ -673,6 +773,46 @@ class LixilShutterBleClient:
                         )
                 with suppress(Exception):
                     bus.disconnect()
+
+    async def _verify_proxy_connection(self) -> None:
+        """Pair and verify BLE connectivity for a Bluetooth Proxy device.
+
+        For Bluetooth Proxy devices (ESPHome/ESP32), D-Bus is not available.
+        Instead, ``BleakClient.pair()`` is used which routes through the
+        ESPHome API: the proxy's ESP32 chip initiates SMP pairing and stores
+        the bond keys in its NVS flash.  Subsequent connections will be
+        established over an authenticated (encrypted) link automatically.
+
+        The device must be in pairing mode (PAIRING_MODE_BIT set) before
+        calling this method; the shutter will reject new bond requests from
+        unknown peers unless it is actively in pairing mode.
+
+        Raises:
+            LixilShutterBleClientCommunicationError: If connection or pairing fails.
+        """
+        client: BleakClient | None = None
+        try:
+            LOGGER.debug("[do_pairing] proxy: connecting to %s for bonding", self.address)
+            client = await establish_connection(
+                BleakClientWithServiceCache,
+                self._ble_device,
+                self._ble_device.address,
+            )
+            LOGGER.debug(
+                "[do_pairing] proxy: calling pair() on %s to initiate SMP bonding",
+                self.address,
+            )
+            await client.pair()
+            LOGGER.debug("[do_pairing] proxy: bonding completed for %s", self.address)
+        except LixilShutterBleClientCommunicationError:
+            raise
+        except Exception as exc:
+            msg = f"Proxy pairing failed for {self.address}: {exc}"
+            raise LixilShutterBleClientCommunicationError(msg) from exc
+        finally:
+            if client is not None:
+                with suppress(Exception):
+                    await client.disconnect()
 
     # ------------------------------------------------------------------
     # Internal helpers

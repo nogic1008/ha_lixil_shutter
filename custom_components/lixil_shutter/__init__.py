@@ -14,6 +14,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from homeassistant.components.bluetooth import (
+    BluetoothCallbackMatcher,
+    BluetoothChange,
+    BluetoothScanningMode,
+    BluetoothServiceInfoBleak,
+    async_ble_device_from_address,
+    async_register_callback,
+)
 from homeassistant.const import Platform
 import homeassistant.helpers.config_validation as cv
 
@@ -45,8 +53,6 @@ async def async_setup_entry(
     address: str = entry.data[CONF_ADDRESS]
 
     # Resolve BLE device from HA bluetooth scanner cache
-    from homeassistant.components.bluetooth import async_ble_device_from_address  # noqa: PLC0415
-
     ble_device = async_ble_device_from_address(hass, address, connectable=True)
     if ble_device is None:
         from homeassistant.exceptions import ConfigEntryNotReady  # noqa: PLC0415
@@ -55,8 +61,29 @@ async def async_setup_entry(
         raise ConfigEntryNotReady(msg)
 
     # Create BLE client and store as runtime data
-    entry.runtime_data = LixilShutterData(
-        client=LixilShutterBleClient(ble_device, production_info_id=entry.data.get(CONF_PRODUCTION_INFO, 0)),
+    client = LixilShutterBleClient(ble_device, production_info_id=entry.data.get(CONF_PRODUCTION_INFO, 0))
+    entry.runtime_data = LixilShutterData(client=client)
+
+    # Keep BLEDevice updated whenever the HA scanner sees a new advertisement.
+    # This is essential for Bluetooth Proxy support: if the device is first seen
+    # by one proxy and later by another (or by the local adapter), the client
+    # must use the freshest BLEDevice so establish_connection routes correctly.
+    def _on_bluetooth_advertisement(
+        service_info: BluetoothServiceInfoBleak,
+        _change: BluetoothChange,
+    ) -> None:
+        updated = async_ble_device_from_address(hass, address, connectable=True)
+        if updated is not None:
+            client.update_ble_device(updated)
+            LOGGER.debug("BLEDevice for %s updated (source: %s)", address, service_info.source)
+
+    entry.async_on_unload(
+        async_register_callback(
+            hass,
+            _on_bluetooth_advertisement,
+            BluetoothCallbackMatcher(address=address, connectable=True),
+            BluetoothScanningMode.PASSIVE,
+        )
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
