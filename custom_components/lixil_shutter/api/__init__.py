@@ -10,7 +10,8 @@ Exception hierarchy:
     └── LixilShutterBleClientCommunicationError (GATT / connection errors)
 """
 
-from .client import LixilShutterBleClient, LixilShutterBleClientCommunicationError, LixilShutterBleClientError
+from .client import LixilShutterBleClient
+from .exceptions import LixilShutterBleClientCommunicationError, LixilShutterBleClientError
 
 __all__ = [
     "LixilShutterBleClient",
