@@ -24,8 +24,8 @@
     },
     "abort": {
       "already_configured": "This shutter is already configured.",
-      "no_devices_found": "No shutters in pairing mode were found nearby. Hold the remote pairing button for 5\u201310 seconds until the LED flashes, then try adding the integration again.",
-      "not_in_pairing_mode": "This shutter is not in pairing mode. Hold the remote pairing button for 5–10 seconds until the LED flashes to enter pairing mode."
+      "no_devices_found": "No shutters in pairing mode were found nearby. Hold the remote pairing button for 5\u201310 seconds until the shutter moves slightly up and down, then try adding the integration again.",
+      "not_in_pairing_mode": "This shutter is not in pairing mode. Hold the remote pairing button for 5\u201310 seconds until the shutter moves slightly up and down to enter pairing mode."
     }
   }
 }

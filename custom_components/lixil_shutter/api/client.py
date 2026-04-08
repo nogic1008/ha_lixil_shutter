@@ -6,7 +6,7 @@ Manages the full BLE lifecycle for the shutter:
   status poll is issued, avoiding a permanently held BLE link.
 - Idle disconnect timer: after each command the client schedules an automatic
   disconnect (``_IDLE_DISCONNECT_SEC`` or the caller-supplied ``idle_after``
-  value) so other BLE clients (e.g. the Android app) can connect in the gap.
+  value) so other BLE clients can connect in the gap.
 - GATT notifications: status updates pushed by the device are delivered to the
   registered callback without polling.
 
@@ -44,9 +44,9 @@ from custom_components.lixil_shutter.const import (
     LOGGER,
     RELEASE_DELAY_SEC,
     STATUS_CLOSED,
-    STATUS_MIN,
     STATUS_OPEN,
     STATUS_UNKNOWN,
+    STATUS_VENTILATION,
     SUB_CODE_DEFAULT,
     SUB_CODE_MEMORY,
     SUB_CODE_VENTILATION,
@@ -54,6 +54,12 @@ from custom_components.lixil_shutter.const import (
 
 _PAIRING_AGENT_PATH = "/com/lixil_shutter/pairing_agent"
 _IDLE_DISCONNECT_SEC: float = 30.0
+
+# ProductionInfo IDs that use SUB_CODE_VENTILATION (0x01) for the memory position command.
+# type=0 (DecorativeWindow) and type=1 (ShutterEaris) send 01 06 01 00.
+# All other types send 01 06 02 00 (SUB_CODE_MEMORY).
+# The same boundary also determines whether the ventilation button is present.
+_NORMAL_TYPE_IDS: frozenset[int] = frozenset({0, 1})
 
 
 class _JustWorksAgent(ServiceInterface):
@@ -132,21 +138,29 @@ class LixilShutterBleClient:
     - Commands written to UCG_OUT characteristic using press + release pattern
     - BLE-level pairing via BlueZ D-Bus Pair()
 
+    Command routing is handled entirely within this client based on
+    ``production_info_id``.  Callers use the semantic methods (``open``,
+    ``close``, ``tilt_position``, etc.) without knowing BLE byte details.
+
     Typical usage (cover entity):
-        client = LixilShutterBleClient(ble_device)
+        client = LixilShutterBleClient(ble_device, production_info_id=1)
         client.set_status_callback(my_callback)  # register once
         await client.open(idle_after=30)          # connects on demand, auto-disconnects
         await client.request_status()             # connect → request → idle disconnect
     """
 
-    def __init__(self, ble_device: BLEDevice) -> None:
+    def __init__(self, ble_device: BLEDevice, production_info_id: int = 0) -> None:
         """
         Initialize the BLE client.
 
         Args:
             ble_device: The discovered BLE device from HA bluetooth scanner.
+            production_info_id: ProductionInfo type ID from BLE advertisement
+                (``bytes[0] & 0x07``).  Determines which commands are available
+                and how they are encoded.  Defaults to ``0`` (unknown type).
         """
         self._ble_device = ble_device
+        self._production_info_id = production_info_id
         self._client: BleakClient | None = None
         self._tag: int = 0
         self._status_callback: Callable[[str], None] | None = None
@@ -168,6 +182,24 @@ class LixilShutterBleClient:
     def is_connected(self) -> bool:
         """Return True if BLE connection is active."""
         return self._connected and self._client is not None and self._client.is_connected
+
+    @property
+    def has_ventilation(self) -> bool:
+        """Return True if this device has a ventilation (saifu) position button.
+
+        True for all types except type=0 (DecorativeWindow) and type=1 (ShutterEaris).
+        Exposed via ``CoverEntityFeature.OPEN_TILT`` in the cover entity.
+        """
+        return self._production_info_id not in _NORMAL_TYPE_IDS
+
+    @property
+    def has_memory_position(self) -> bool:
+        """Return True if this device has a memory position button.
+
+        All product types have this button.  The subCode byte sent depends on
+        the type — see ``move_to_memory_position()``.
+        """
+        return True
 
     async def connect(
         self,
@@ -443,21 +475,36 @@ class LixilShutterBleClient:
         """
         await self._execute(KEY_CODE_STOP, idle_after=idle_after)
 
-    async def memory_position(self, idle_after: float | None = None) -> None:
-        """Move to the stored memory (favourite) position (keyCode=0x06, subCode=0x02).
+    async def open_flap_slats(self, idle_after: float | None = None) -> None:
+        """Open the flap slats to allow ventilation (採風).
 
-        Connects on demand, sends press+release, then schedules an idle
-        disconnect after ``idle_after`` seconds (default: ``_IDLE_DISCONNECT_SEC``).
+        Tilts the flap slats open so wind and light can pass through while the
+        shutter remains closed.  Available on all types except type=0
+        (DecorativeWindow) and type=1 (ShutterEaris) — see ``has_ventilation``.
+        Exposed via ``CoverEntityFeature.OPEN_TILT`` in the cover entity.
+        Sends press only — no release frame (keyCode=0x06, subCode=0x01).
+        Connects on demand, then schedules an idle disconnect after ``idle_after``
+        seconds (default: ``_IDLE_DISCONNECT_SEC``).
+
+        Note: the flap slats are also closed as part of the shutter's normal
+        close motion — sending the close command closes both the shutter
+        and the flap slats.
         """
-        await self._execute(KEY_CODE_POSITION, SUB_CODE_MEMORY, idle_after=idle_after)
+        await self._execute(KEY_CODE_POSITION, SUB_CODE_VENTILATION, press_only=True, idle_after=idle_after)
 
-    async def ventilation_position(self, idle_after: float | None = None) -> None:
-        """Move to the ventilation (saifu) position (keyCode=0x06, subCode=0x01).
+    async def move_to_memory_position(self, idle_after: float | None = None) -> None:
+        """Move to the stored memory position.
 
-        Connects on demand, sends press+release, then schedules an idle
-        disconnect after ``idle_after`` seconds (default: ``_IDLE_DISCONNECT_SEC``).
+        All device types have this button.  The subCode byte differs by type:
+        - type=0,1 (DecorativeWindow, ShutterEaris) : ``01 06 01 00`` (SUB_CODE_VENTILATION, no RELEASE)
+        - all other types : ``01 06 02 00`` (SUB_CODE_MEMORY, no RELEASE)
+
+        No HA cover feature currently exposes this.
+        Connects on demand, then schedules an idle disconnect after ``idle_after``
+        seconds (default: ``_IDLE_DISCONNECT_SEC``).
         """
-        await self._execute(KEY_CODE_POSITION, SUB_CODE_VENTILATION, idle_after=idle_after)
+        sub_code = SUB_CODE_VENTILATION if self._production_info_id in _NORMAL_TYPE_IDS else SUB_CODE_MEMORY
+        await self._execute(KEY_CODE_POSITION, sub_code, press_only=True, idle_after=idle_after)
 
     async def request_status(self, idle_after: float | None = None) -> None:
         """Send status request command (keyState=0x03, keyCode=0x0B).
@@ -632,31 +679,42 @@ class LixilShutterBleClient:
     # ------------------------------------------------------------------
 
     async def _execute(
-        self, key_code: int, sub_code: int = SUB_CODE_DEFAULT, *, idle_after: float | None = None
+        self,
+        key_code: int,
+        sub_code: int = SUB_CODE_DEFAULT,
+        *,
+        press_only: bool = False,
+        idle_after: float | None = None,
     ) -> None:
         """
-        Send a press+release command pair to the shutter.
+        Send a command to the shutter.
 
-        1. Send press bytes  (keyState=KEY_STATE_PRESS)
-        2. Wait RELEASE_DELAY_SEC (100 ms)
-        3. Send release bytes (keyState=KEY_STATE_RELEASE)
+        When ``press_only=False`` (default):
+          1. Send press bytes  (keyState=KEY_STATE_PRESS)
+          2. Wait RELEASE_DELAY_SEC (100 ms)
+          3. Send release bytes (keyState=KEY_STATE_RELEASE)
+
+        When ``press_only=True``:
+          1. Send press bytes only — the device acts on the press alone.
 
         Args:
-            key_code: Command key code byte (e.g. KEY_CODE_OPEN).
-            sub_code: Sub-code byte (default SUB_CODE_DEFAULT=0x00).
+            key_code:   Command key code byte (e.g. KEY_CODE_OPEN).
+            sub_code:   Sub-code byte (default SUB_CODE_DEFAULT=0x00).
+            press_only: If True, skip the release frame.
 
         Raises:
             LixilShutterBleClientCommunicationError: On GATT write failure.
         """
         tag = self._next_tag()
         press = self._build_command(KEY_STATE_PRESS, key_code, sub_code, tag)
-        release = self._build_command(KEY_STATE_RELEASE, key_code, sub_code, tag)
         try:
             async with asyncio.timeout(COMMAND_TIMEOUT_SEC):
                 await self._ensure_connected()
                 await self._write(press)
-                await asyncio.sleep(RELEASE_DELAY_SEC)
-                await self._write(release)
+                if not press_only:
+                    release = self._build_command(KEY_STATE_RELEASE, key_code, sub_code, tag)
+                    await asyncio.sleep(RELEASE_DELAY_SEC)
+                    await self._write(release)
         except LixilShutterBleClientCommunicationError:
             raise
         except Exception as exc:
@@ -690,9 +748,6 @@ class LixilShutterBleClient:
         """
         Build 4-byte GATT command.
 
-        Mirrors ShutterClient.makeCommand():
-          bytes = [keyState, keyCode, subCode, tag]
-
         Args:
             key_state: KEY_STATE_PRESS or KEY_STATE_RELEASE.
             key_code:  Key code byte (e.g. KEY_CODE_OPEN).
@@ -712,7 +767,7 @@ class LixilShutterBleClient:
         """
         Handle incoming GATT notification from UCG_IN.
 
-        Routing (mirrors ShutterClient$createGatt$1.onCharacteristicChanged):
+        Routing:
         - data length < 6  → status notification, parse and call status_callback
         - any length       → command executed notification (ignored here)
 
@@ -729,28 +784,26 @@ class LixilShutterBleClient:
         """
         Parse status from notification bytes[2].
 
-        Bit analysis (mirrors ShutterClient.fetchStatus):
-          bits[5] == '1' → STATUS_MIN  (fully closed / minimum)
-          bits[4] == '0' → STATUS_OPEN
-          bits[4] == '1' → STATUS_CLOSED
+        Bit analysis:
+          bit2 set (byte & 0x04) → STATUS_VENTILATION  (flap slats open / saifu)
+          bit3 set (byte & 0x08) → STATUS_CLOSED
+          bit3 clear             → STATUS_OPEN
 
         Args:
             data: Raw notification bytes (must have at least 3 bytes for status).
 
         Returns:
-            One of STATUS_OPEN, STATUS_CLOSED, STATUS_MIN, STATUS_UNKNOWN.
+            One of STATUS_OPEN, STATUS_CLOSED, STATUS_VENTILATION.
+            STATUS_UNKNOWN is returned only if *data* is too short (< 3 bytes).
         """
         if len(data) < 3:
             return STATUS_UNKNOWN
         byte = data[2] & 0xFF
-        bits = format(byte, "08b")  # MSB on the left, e.g. "01001000"
-        if bits[5] == "1":
-            return STATUS_MIN
-        if bits[4] == "0":
-            return STATUS_OPEN
-        if bits[4] == "1":
+        if byte & 0x04:  # bit2 set → ventilation (saifu)
+            return STATUS_VENTILATION
+        if byte & 0x08:  # bit3 set → closed
             return STATUS_CLOSED
-        return STATUS_UNKNOWN
+        return STATUS_OPEN  # bit3 clear → open
 
 
 __all__ = [

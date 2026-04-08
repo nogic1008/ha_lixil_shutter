@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant
 
 
 async def async_setup_services(hass: HomeAssistant) -> None:
-    """Register services for the integration (no custom services for BLE shutter)."""
+    """Register services for the integration (no custom services defined)."""
 
 
 __all__ = ["async_setup_services"]
