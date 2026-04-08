@@ -4,31 +4,21 @@ This document describes all configuration options and settings available in the 
 
 ## Integration Configuration
 
-### Initial Setup Options
+### Initial Setup
 
-These options are configured during initial setup via the Home Assistant UI.
+No credentials are required. The config flow only asks you to confirm the detected device.
 
-#### Connection Settings
+Information shown during setup:
 
-| Option | Type | Required | Default | Description |
-|--------|------|----------|---------|-------------|
-| **Host** | string | Yes | - | Hostname or IP address of the device/service |
-| **Port** | integer | No | 8080 | Connection port |
-| **API Key** | string | Yes* | - | Authentication key or token |
-| **Use SSL** | boolean | No | false | Enable HTTPS connection |
+| Field | Description |
+| ----- | ----------- |
+| **Name** | Device name from the BLE advertisement |
+| **Address** | Bluetooth address of the shutter |
+| **Product Type** | Detected product type (e.g., `ShutterItalia`, `Sunshade`) |
 
-*Required if the device/service requires authentication.
+### Options Flow (Post-Setup Configuration)
 
-#### Update Settings
-
-| Option | Type | Required | Default | Description |
-|--------|------|----------|---------|-------------|
-| **Update Interval** | integer (seconds) | No | 300 | How often to poll for updates (minimum: 30 seconds) |
-| **Name** | string | No | "Device" | Friendly name for the integration instance |
-
-### Options Flow (Reconfiguration)
-
-After initial setup, you can modify settings:
+After initial setup, you can adjust connection behaviour:
 
 1. Go to **Settings** → **Devices & Services**
 2. Find "Lixil Bluetooth Shutter"
@@ -38,130 +28,82 @@ After initial setup, you can modify settings:
 
 **Available options:**
 
-- Update interval
-- Name/identifier
-- Connection timeout
-- Additional features (device-specific)
+| Option | Default | Description |
+| ------ | ------- | ----------- |
+| **Poll Interval** | 300 s | How often Home Assistant requests the shutter state over BLE. Increase to reduce BLE traffic; decrease for more responsive state updates. |
+| **Command Monitor Window** | 30 s | How long the BLE connection stays open after sending a command. This allows the device's completion notification to arrive before the connection is dropped. |
+
+Changes take effect immediately without restarting Home Assistant — the cover entity reschedules its poll timer automatically.
 
 ## Entity Configuration
 
+### Cover Entity
+
+One `cover` entity is created per configured shutter.
+
+**Device class:** `shutter`
+
+**Supported actions:**
+
+| Action | All models | Ventilation models only |
+| ------ | ---------- | ----------------------- |
+| Open | ✅ | — |
+| Close | ✅ | — |
+| Stop | ✅ | — |
+| Open Tilt (採風) | — | ✅ |
+| Close Tilt | — | ✅ |
+
+Ventilation models: ShutterItalia, Sunshade, Skylight, Screen, ACAdapter, InHouseGarage.
+Non-ventilation models: DecorativeWindow, ShutterEaris.
+
+**Extra state attributes:**
+
+| Attribute | Description |
+| --------- | ----------- |
+| `ble_address` | Bluetooth address of the device |
+| `product_type` | Detected product type string |
+
+**Tilt position values (ventilation models only):**
+
+| Value | Meaning |
+| ----- | ------- |
+| `0` | Flap slats closed |
+| `100` | Flap slats open (ventilation / 採風 position) |
+
 ### Entity Customization
 
-Customize entities via the UI or `configuration.yaml`:
-
-#### Via Home Assistant UI
+Customize entities via the Home Assistant UI:
 
 1. Go to **Settings** → **Devices & Services** → **Entities**
 2. Find and click the entity
 3. Click the settings icon
-4. Modify:
-   - Entity ID
-   - Name
-   - Icon
-   - Device class (for applicable entities)
-   - Area assignment
-
-#### Via configuration.yaml
-
-```yaml
-homeassistant:
-  customize:
-    sensor.device_name_sensor:
-      friendly_name: "Custom Sensor Name"
-      icon: mdi:custom-icon
-      unit_of_measurement: "units"
-```
+4. Modify name, icon, or area assignment
 
 ### Disabling Entities
 
-If you don't need certain entities:
+If you don't need an entity:
 
 1. Go to **Settings** → **Devices & Services** → **Entities**
 2. Find the entity
-3. Click it, then click **Settings** icon
+3. Click it, then click the **Settings** icon
 4. Toggle **Enable entity** off
 
-Disabled entities won't update or consume resources.
+## Polling Behaviour
 
-## Services
+The integration uses a hybrid approach:
 
-The integration provides the following services:
+- **BLE GATT notifications** (push): The device pushes state updates after each command completes — no polling required for command responses.
+- **Periodic polling** (pull): Home Assistant periodically requests the shutter status via BLE to detect any state changes made without HA (e.g., using the physical remote).
 
-### `lixil_shutter.example_service`
+The BLE connection is on-demand: it connects when a poll or command is issued and automatically disconnects after the command monitor window expires. This avoids holding a permanent BLE link.
 
-Execute an example service action on the device.
+### Tuning Polling
 
-**Service data:**
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `entity_id` | string or list | No | Target entity/entities (if omitted, targets all) |
-| `parameter` | string | Yes | Service-specific parameter |
-| `value` | integer | No | Numeric value for the action |
-
-**Example:**
-
-```yaml
-service: lixil_shutter.example_service
-target:
-  entity_id: switch.device_name_switch
-data:
-  parameter: "setting_name"
-  value: 42
-```
-
-### Using Services in Automations
-
-```yaml
-automation:
-  - alias: "Call service at sunset"
-    trigger:
-      - trigger: sun
-        event: sunset
-    action:
-      - action: lixil_shutter.example_service
-        target:
-          entity_id: switch.device_name_switch
-        data:
-          parameter: "mode"
-          value: 1
-```
-
-## Advanced Configuration
-
-### Multiple Instances
-
-You can add multiple instances of this integration for different devices:
-
-1. Go to **Settings** → **Devices & Services**
-2. Click **+ Add Integration**
-3. Search for "Lixil Bluetooth Shutter"
-4. Configure with different connection details
-
-Each instance creates separate entities with unique entity IDs.
-
-### Network Configuration
-
-If the device is on a different network or behind a firewall:
-
-- Ensure ports are open (default: 8080)
-- Configure port forwarding if needed
-- Consider VPN for remote access
-- Some devices may require static IP addresses
-
-### Polling Behavior
-
-The integration uses polling to fetch updates:
-
-- **Minimum interval:** 30 seconds (prevents overloading the device)
-- **Recommended interval:** 5 minutes (default)
-- **Longer intervals:** Save resources but reduce responsiveness
-
-Adjust based on your needs:
-
-- Real-time monitoring: 30-60 seconds
-- Regular updates: 5 minutes
-- Slow-changing values: 15-30 minutes
+| Use Case | Recommended Poll Interval |
+| -------- | ------------------------- |
+| Rarely use physical remote | 10–30 minutes (600–1800 s) |
+| Sometimes use physical remote | 5 minutes (300 s, default) |
+| Frequently use physical remote | 1–2 minutes (60–120 s) |
 
 ## Diagnostic Data
 
@@ -174,30 +116,12 @@ The integration provides diagnostic data for troubleshooting:
 
 Diagnostic data includes:
 
-- Connection status
-- Last update timestamp
-- API response data
-- Entity states
-- Error history
+- Config entry ID and title
+- BLE address and connection status
+- Registered device and entity details
 
-**Privacy note:** Diagnostic data may contain sensitive information. Review before sharing.
+**Privacy note:** The diagnostic data for this integration does not contain sensitive personal information. The BLE address identifies your device hardware.
 
-## Blueprints
-
-The integration works with Home Assistant Blueprints for reusable automations:
-
-### Example Blueprint
-
-```yaml
-blueprint:
-  name: Lixil Bluetooth Shutter Alert
-  description: Send notification when sensor exceeds threshold
-  domain: automation
-  input:
-    sensor_entity:
-      name: Sensor
-      selector:
-        entity:
           domain: sensor
           integration: lixil_shutter
     threshold:
