@@ -97,27 +97,24 @@ Both paths converge at:
 
 No coordinator is used. The cover entity communicates with the BLE client directly:
 
-```text
-┌──────────────────┐
-│  Config Entry    │ ← Created by config flow
-└────────┬─────────┘
-         │ entry.runtime_data.client
-         ▼
-┌──────────────────────────────────────────────┐
-│          LixilShutterBleClient               │
-│  (on-demand BLE, GATT notifications)         │
-└───────┬──────────────────────────────────────┘
-        │ set_status_callback / commands
-        ▼
-┌──────────────────────────────────────────────┐
-│          LixilShutterCover                   │
-│  (cover entity, state management)            │
-└──────────────────────────────────────────────┘
-        │ async_write_ha_state()
-        ▼
-┌──────────────────────────────────────────────┐
-│          Home Assistant State Machine        │
-└──────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    CF["Config Flow\n(bluetooth / user step)"]
+    CE["Config Entry\nentry.runtime_data.client"]
+    BLE["LixilShutterBleClient\non-demand BLE · GATT notifications"]
+    DEV["LIXIL MyWindow Shutter\n(BLE device)"]
+    COV["LixilShutterCover\ncover entity · state management"]
+    HA["Home Assistant\nState Machine"]
+    TIMER["async_track_time_interval\nperiodic poll timer"]
+
+    CF -->|"creates"| CE
+    CE -->|"entry.runtime_data.client"| COV
+    COV -->|"open / close / stop / request_status"| BLE
+    BLE <-->|"BLE GATT (UCG_OUT write / UCG_IN notify)"| DEV
+    DEV -->|"status notification (push)"| BLE
+    BLE -->|"_on_status_notification callback"| COV
+    TIMER -->|"async_update() every poll_interval"| COV
+    COV -->|"async_write_ha_state()"| HA
 ```
 
 State update triggers:
