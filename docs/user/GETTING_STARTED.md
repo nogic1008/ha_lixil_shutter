@@ -5,8 +5,8 @@ This guide will help you install and set up the Lixil Bluetooth Shutter custom i
 ## Prerequisites
 
 - Home Assistant 2025.7.0 or newer
-- HACS (Home Assistant Community Store) installed
-- Network connectivity to [external service/device]
+- Bluetooth capability on your Home Assistant host (built-in adapter, USB dongle, or [ESPHome Bluetooth Proxy](https://esphome.io/components/bluetooth_proxy))
+- [HACS](https://hacs.xyz/) (Home Assistant Community Store) installed
 
 ## Installation
 
@@ -32,137 +32,129 @@ This guide will help you install and set up the Lixil Bluetooth Shutter custom i
 
 ## Initial Setup
 
-After installation, add the integration:
+### Step 1: Activate Pairing Mode on the Shutter
+
+Before adding the integration, the shutter must be in pairing mode.
+The exact button sequence depends on your model — refer to your device's manual.
+
+While in pairing mode, the shutter advertises itself via Bluetooth and Home Assistant can discover it.
+
+### Step 2: Add the Integration
+
+#### Option A — Automatic Discovery
+
+When Home Assistant detects a shutter in pairing mode, a notification badge appears on
+**Settings** → **Devices & Services**. The device will be listed under "Discovered".
+
+1. Click **Configure** next to the discovered device
+2. Review the device details (name, Bluetooth address, product type)
+3. Click **Submit** to confirm and pair
+
+#### Option B — Manual Setup
 
 1. Go to **Settings** → **Devices & Services**
 2. Click **+ Add Integration**
 3. Search for "Lixil Bluetooth Shutter"
-4. Follow the configuration steps:
+4. Home Assistant scans for shutters in pairing mode and shows a list
+5. Select your shutter and click **Submit**
+6. Review the detected device details and click **Submit** to pair
 
-### Step 1: Connection Information
-
-Enter the required connection details:
-
-- **Host/IP Address:** The hostname or IP address of your device/service
-- **API Key/Token:** Your authentication credentials (if applicable)
-- **Port:** Connection port (default: 8080)
-
-Click **Submit** to test the connection.
-
-### Step 2: Configuration Options
-
-Configure optional settings:
-
-- **Update Interval:** How often to poll for updates (default: 5 minutes)
-- **Name:** Friendly name for this integration instance
-
-Click **Submit** to complete setup.
+If no devices appear in the list, make sure your shutter is in pairing mode and retry.
 
 ## What Gets Created
 
-After successful setup, the integration creates:
+After successful pairing, the integration creates one device with one entity per shutter.
 
-### Devices
+### Device
 
-- **Device Name:** Main device representing your connected service/hardware
-  - Model information
-  - Software version
-  - Configuration URL (link to device web interface)
+A device entry is created in Home Assistant with:
+
+- Manufacturer and model information from the BLE advertisement
+- Bluetooth address as the unique identifier
 
 ### Entities
 
-The following entities are automatically created:
+#### Cover
 
-#### Sensors
+One `cover` entity is created for each shutter:
 
-- `sensor.<device_name>_<sensor_name>` - Descriptive sensor measurements
-- More sensors as applicable to your setup
+- `cover.<device_name>` — Controls open, close, and stop
 
-#### Binary Sensors
+**Tilt support (ventilation models only):**
 
-- `binary_sensor.<device_name>_<sensor_name>` - On/off status indicators
+On ShutterItalia, Sunshade, Skylight, Screen, ACAdapter, and InHouseGarage product types,
+two additional tilt actions are available:
 
-#### Switches
+- **Open Tilt** — Opens the flap slats to the ventilation position (採風)
+- **Close Tilt** — Closes the flap slats
 
-- `switch.<device_name>_<switch_name>` - Controllable on/off switches
-
-#### Other Platforms
-
-Additional entities may be created depending on your device capabilities.
+DecorativeWindow and ShutterEaris models do not support tilt.
 
 ## First Steps
 
 ### Dashboard Cards
 
-Add entities to your dashboard:
+Add the shutter to your dashboard:
 
 1. Go to your dashboard
 2. Click **Edit Dashboard** → **Add Card**
-3. Choose card type (e.g., "Entities", "Glance")
-4. Select entities from "Lixil Bluetooth Shutter"
+3. Choose "Tile" or "Button" card type
+4. Select the shutter entity
 
-Example entities card:
+Example cover card:
 
 ```yaml
-type: entities
-title: Lixil Bluetooth Shutter
-entities:
-  - sensor.device_name_sensor
-  - binary_sensor.device_name_connectivity
-  - switch.device_name_switch
+type: tile
+entity: cover.my_shutter
 ```
 
 ### Automations
 
-Use the integration in automations:
+Control the shutter in automations:
 
-**Example - Trigger on sensor change:**
+**Example — Close shutter at sunset:**
 
 ```yaml
 automation:
-  - alias: "React to sensor value"
+  - alias: "Close shutter at sunset"
     trigger:
-      - trigger: state
-        entity_id: sensor.device_name_sensor
+      - trigger: sun
+        event: sunset
     action:
-      - action: notify.notify
-        data:
-          message: "Sensor changed to {{ trigger.to_state.state }}"
+      - action: cover.close_cover
+        target:
+          entity_id: cover.my_shutter
 ```
 
-**Example - Control switch based on time:**
+**Example — Open ventilation in the morning:**
 
 ```yaml
 automation:
-  - alias: "Turn on in morning"
+  - alias: "Open ventilation in the morning"
     trigger:
       - trigger: time
         at: "07:00:00"
     action:
-      - action: switch.turn_on
+      - action: cover.open_cover_tilt
         target:
-          entity_id: switch.device_name_switch
+          entity_id: cover.my_shutter
 ```
 
 ## Troubleshooting
 
-### Connection Failed
+### No Devices Found
 
-If setup fails with connection errors:
+If the device list is empty during setup:
 
-1. Verify the host/IP address is correct and reachable
-2. Check that the API key/token is valid
-3. Ensure no firewall is blocking the connection
-4. Check Home Assistant logs for detailed error messages
+1. Confirm the shutter is in pairing mode (check your device manual)
+2. Verify your Home Assistant host has Bluetooth access
+3. Move the shutter closer to the Bluetooth adapter and try again
 
-### Entities Not Updating
+### Shutter Shows "Unavailable"
 
-If entities show "Unavailable" or don't update:
-
-1. Check that the device/service is online
-2. Verify API credentials haven't expired
-3. Review logs: **Settings** → **System** → **Logs**
-4. Try reloading the integration
+1. Check the shutter is powered on and within Bluetooth range
+2. Enable debug logging and reproduce the issue (see below)
+3. Download integration diagnostics: **Settings** → **Devices & Services** → **Lixil Bluetooth Shutter** → 3 dots → **Download Diagnostics**
 
 ### Debug Logging
 
@@ -175,17 +167,15 @@ logger:
     custom_components.lixil_shutter: debug
 ```
 
-Add this to `configuration.yaml`, restart, and reproduce the issue. Check logs for detailed information.
+Add this to `configuration.yaml`, restart Home Assistant, and reproduce the issue.
 
 ## Next Steps
 
-- See [CONFIGURATION.md](./CONFIGURATION.md) for detailed configuration options
-- See [EXAMPLES.md](./EXAMPLES.md) for more automation examples
+- See [CONFIGURATION.md](./CONFIGURATION.md) for post-setup configuration options
 - Report issues at [GitHub Issues](https://github.com/nogic1008/ha_lixil_shutter/issues)
 
 ## Support
 
-For help and discussion:
-
 - [GitHub Discussions](https://github.com/nogic1008/ha_lixil_shutter/discussions)
 - [Home Assistant Community Forum](https://community.home-assistant.io/)
+

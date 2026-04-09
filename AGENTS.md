@@ -58,7 +58,7 @@ If you're using GitHub Copilot, path-specific instructions in `.github/instructi
 
 - **Claude Code:** See [`CLAUDE.md`](CLAUDE.md) (pointer to this file)
 - **Gemini:** See [`GEMINI.md`](GEMINI.md) (pointer to this file)
-- **GitHub Copilot:** See [`.github/copilot-instructions.md`](.github/copilot-instructions.md) (compact version of this file)
+- **GitHub Copilot:** See [`.github/copilot-instructions.md`](.github/copilot-instructions.md) (pointer to this file — GitHub Copilot reads `AGENTS.md` natively)
 
 ## Working With Developers
 
@@ -195,30 +195,23 @@ This integration uses the following identifiers consistently:
 
 **Package organization (DO NOT create other packages):**
 
-- `api/` - API client and exceptions
-- `coordinator/` - Data update coordinator
-- `config_flow_handler/` - Config flow, options, validators, schemas
-  - `validators/*.py` - Config flow validation functions
-  - `schemas/*.py` - Data schemas for config flow steps
-- `entity/` - Base entity classes
-- `entity_utils/` - Entity-specific helpers (device_info, state formatting)
-- `[platform]/` - Entity platforms (sensor, switch, etc.)
-- `service_actions/` - Service action implementations
-- `utils/` - Integration-wide utilities (string helpers, general validators)
+- `api/` - BLE GATT client and exceptions (`LixilShutterBleClient`)
+- `config_flow_handler/` - Config flow, options flow, schemas
+  - `schemas/*.py` - Voluptuous schemas for options form
+- `cover/` - Cover platform (`LixilShutterCover` entity)
+- `service_actions/` - Service action handlers (currently empty)
 
 **Do NOT create:**
 
-- `helpers/`, `ha_helpers/`, or similar packages - use `utils/` or `entity_utils/` instead
-- `common/`, `shared/`, `lib/` - use existing packages above
+- `coordinator/`, `entity/`, `entity_utils/`, `utils/`, `helpers/`, `common/`, `shared/` — this integration uses direct BLE client access, not a coordinator
 - New top-level packages without explicit approval
 
 **Key patterns:**
 
-- Entities → Coordinator → API Client (never skip layers)
+- Cover entity holds `LixilShutterBleClient` directly via `entry.runtime_data.client` (no coordinator)
+- BLE connection is on-demand: connects on command/poll, auto-disconnects after idle timeout
+- State updates driven by GATT notifications (push) + periodic `async_track_time_interval` polls
 - Each platform in own directory with `__init__.py`
-- One entity class per file for clarity
-- Individual entity classes in separate files (e.g., `air_quality.py`)
-- Use `EntityDescription` dataclasses for static entity metadata
 
 **Code organization principles:**
 
@@ -229,8 +222,8 @@ This integration uses the following identifiers consistently:
 **For detailed patterns, see:**
 
 - `.github/instructions/entities.instructions.md` - Entity platform patterns
-- `.github/instructions/coordinator.instructions.md` - Coordinator implementation
-- `.github/instructions/api.instructions.md` - API client patterns
+- `.github/instructions/api.instructions.md` - BLE client patterns
+- `.github/instructions/coordinator.instructions.md` - Coordinator patterns (for reference if coordinator is added later)
 
 ### Device Info
 
@@ -327,19 +320,20 @@ See `.github/instructions/config_flow.instructions.md` for comprehensive pattern
 
 See `.github/instructions/service_actions.instructions.md` for service patterns.
 
-**Coordinator:**
+**BLE Client (`api/client.py`):**
 
-- Entities → Coordinator → API Client (never skip layers)
-- Raise `ConfigEntryAuthFailed` (triggers reauth) or `UpdateFailed` (retry)
-- Use `async_config_entry_first_refresh()` for first update
+- `LixilShutterBleClient` manages on-demand BLE connection and GATT lifecycle
+- Connects when a command or poll is issued; auto-disconnects after idle timeout
+- Raises `LixilShutterBleClientCommunicationError` for BLE errors
+- Status updates pushed via GATT notification callback (`set_status_callback`)
 
-See `.github/instructions/coordinator.instructions.md` and `.github/instructions/api.instructions.md` for details.
+See `.github/instructions/api.instructions.md` for details.
 
 **Entities:**
 
-- Inherit from platform base + `LixilShutterEntity`
-- Read from `coordinator.data`, never call API directly
-- Use `EntityDescription` for static metadata
+- Inherit from HA platform base (e.g., `CoverEntity`) directly — no `LixilShutterEntity` base class
+- Access BLE client via `entry.runtime_data.client`
+- Register GATT callback in `async_added_to_hass`; disconnect in `async_will_remove_from_hass`
 
 See `.github/instructions/entities.instructions.md` for entity patterns.
 
@@ -355,14 +349,14 @@ See `.github/instructions/repairs.instructions.md` for comprehensive patterns.
 **Entity availability:**
 
 - Set `_attr_available = False` when device is unreachable
-- Update availability based on coordinator success/failure
+- Update availability when BLE poll fails or connection error occurs
 - Don't raise exceptions from `@property` methods
 
 **State updates:**
 
 - Use `self.async_write_ha_state()` for immediate updates
-- Let coordinator handle periodic updates
-- Minimize API calls (batch requests when possible)
+- State driven by GATT notification callbacks and periodic status polls
+- Minimize BLE commands (request_status where possible)
 
 **Setup failure handling:**
 
@@ -454,8 +448,8 @@ See `.github/instructions/python.instructions.md` for linter overrides and error
 **Test structure:**
 
 - `tests/` mirrors `custom_components/lixil_shutter/` structure
-- Use fixtures for common setup (Home Assistant mock, coordinator, etc.)
-- Mock external API calls
+- Use fixtures for common setup (Home Assistant mock, BLE device mock, etc.)
+- Mock BLE operations using `bleak` mock fixtures
 
 **Running tests:**
 
@@ -503,8 +497,8 @@ See `.github/instructions/tests.instructions.md` for comprehensive testing patte
 **Single logical feature or fix:**
 
 - Implement completely even if it spans 5-8 files
-- Example: New sensor needs entity class + platform init + code → implement all together
-- Example: Bug fix requires changes in coordinator + entity + error handling → do all at once
+- Example: New platform needs entity class + platform init + BLE command → implement all together
+- Example: Bug fix requires changes in BLE client + cover entity + error handling → do all at once
 
 **Multiple independent features:**
 

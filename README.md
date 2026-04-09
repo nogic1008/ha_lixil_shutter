@@ -20,50 +20,37 @@ Uncomment and customize these badges if you want to use them:
 
 ## ✨ Features
 
-- **Easy Setup**: Simple configuration through the UI - no YAML required
-- **Air Quality Monitoring**: Track AQI and PM2.5 levels in real-time
-- **Filter Management**: Monitor filter life and get replacement alerts
-- **Smart Control**: Adjust fan speed, target humidity, and operating modes
-- **Child Lock**: Safety feature to prevent accidental changes
-- **Diagnostic Info**: View filter life, runtime hours, and device statistics
-- **Reconfigurable**: Change credentials anytime without removing the integration
-- **Options Flow**: Adjust settings like update interval after setup
-- **Custom Services**: Advanced control with built-in service calls
+- **Local Control**: Direct Bluetooth LE communication — no cloud, no hub required
+- **Automatic Discovery**: Home Assistant detects shutters automatically when in pairing mode
+- **Open / Close / Stop**: Full shutter control from Home Assistant
+- **Ventilation Mode** (selected models): Open/close the flap slats (採風) for partial ventilation
+- **Real-time State**: Status updates via BLE GATT notifications pushed by the device
+- **Multiple Product Types**: Supports DecorativeWindow, ShutterItalia, Sunshade, Skylight, Screen, and more
+- **Options Flow**: Adjust polling interval and connection settings after setup
 
-**This integration will set up the following platforms.**
+**This integration will set up the following platform.**
 
 Platform | Description
 -- | --
-`sensor` | Air quality index (AQI), PM2.5, filter life, and runtime
-`binary_sensor` | API connection status and filter replacement alert
-`switch` | Child lock and LED display controls
-`select` | Fan speed selection (Low/Medium/High/Auto)
-`number` | Target humidity setting (30-80%)
-`button` | Reset filter timer after replacement
-`fan` | Air purifier fan control with speed settings
-
-> **💡 Interactive Demo**: The entities are interconnected for demonstration:
->
-> - Press the **Reset Filter Timer** button → **Filter Life Remaining** sensor updates to 100%
-> - Change the **Air Purifier** fan speed → **Fan Speed** select syncs automatically
-> - Change the **Fan Speed** select → **Air Purifier** fan syncs automatically
+`cover` | Shutter device — open, close, stop, and tilt (ventilation models only)
 
 ## 🚀 Quick Start
 
 ### Step 1: Install the Integration
 
-**Prerequisites:** This integration requires [HACS](https://hacs.xyz/) (Home Assistant Community Store) to be installed.
+**Prerequisites:**
+
+- Home Assistant with Bluetooth capability (built-in adapter or [ESPHome Bluetooth Proxy](https://esphome.io/components/bluetooth_proxy))
+- [HACS](https://hacs.xyz/) (Home Assistant Community Store) installed
 
 Click the button below to open the integration directly in HACS:
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=jpawlowski&repository=ha_lixil_shutter&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=nogic1008&repository=ha_lixil_shutter&category=integration)
 
 Then:
 
 1. Click "Download" to install the integration
 2. **Restart Home Assistant** (required after installation)
-
-> **Note:** The My Home Assistant redirect will first take you to a landing page. Click the button there to open your Home Assistant instance.
 
 <details>
 <summary>**Manual Installation (Advanced)**</summary>
@@ -76,147 +63,71 @@ If you prefer not to use HACS:
 
 </details>
 
-### Step 2: Add and Configure the Integration
+### Step 2: Put the Shutter in Pairing Mode
 
-**Important:** You must have installed the integration first (see Step 1) and restarted Home Assistant!
+Before adding the integration, activate pairing mode on your LIXIL MyWindow shutter.
+Refer to your device's manual for the exact button sequence (typically a long press on the remote).
 
-#### Option 1: One-Click Setup (Quick)
+The device must be in pairing mode for Home Assistant to detect it.
 
-Click the button below to open the configuration dialog:
+### Step 3: Add and Configure the Integration
+
+**Option A — Automatic Discovery**
+
+When Home Assistant detects a shutter in pairing mode, a notification appears in
+**Settings** → **Devices & Services** under "Discovered". Click **Configure** and:
+
+1. Review the detected device name, address, and product type
+2. Click **Submit** to confirm and pair
+
+**Option B — Manual Setup**
 
 [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=lixil_shutter)
 
-Follow the setup wizard:
+Or go to **Settings** → **Devices & Services** → **+ Add Integration** → search "Lixil Bluetooth Shutter".
 
-1. Enter your username
-2. Enter your password
-3. Click Submit
+Home Assistant scans for nearby shutters in pairing mode and displays a list to choose from.
+If no devices appear, ensure the shutter is in pairing mode and try again.
 
-That's it! The integration will start loading your data.
+### Step 4: Adjust Settings (Optional)
 
-#### Option 2: Manual Configuration
-
-1. Go to **Settings** → **Devices & Services**
-2. Click **"+ Add Integration"**
-3. Search for "Lixil Bluetooth Shutter"
-4. Follow the same setup steps as Option 1
-
-### Step 3: Adjust Settings (Optional)
-
-After setup, you can adjust options:
+After setup, you can fine-tune connection behaviour:
 
 1. Go to **Settings** → **Devices & Services**
 2. Find **Lixil Bluetooth Shutter**
 3. Click **Configure** to adjust:
-   - Update interval (how often to refresh data)
-   - Enable debug logging
-
-You can also **Reconfigure** your credentials anytime without removing the integration.
-
-### Step 4: Start Using!
-
-The integration creates several entities for your air purifier:
-
-- **Sensors**: Air quality index, PM2.5 levels, filter life remaining, total runtime
-- **Binary Sensors**: API connection status, filter replacement alert
-- **Switches**: Child lock, LED display control
-- **Select**: Fan speed (Low/Medium/High/Auto)
-- **Number**: Target humidity (30-80%)
-- **Button**: Reset filter timer
-- **Fan**: Air purifier fan control
-
-Find all entities in **Settings** → **Devices & Services** → **Lixil Bluetooth Shutter** → click on the device.
+   - **Poll interval**: How often HA requests the shutter state (default: 5 minutes)
+   - **Command monitor window**: How long the BLE connection stays open after a command (default: 30 seconds)
 
 ## Available Entities
 
-### Sensors
+### Cover
 
-- **Air Quality Index (AQI)**: Real-time air quality measurement (0-500 scale)
-  - Includes air quality category (Good/Moderate/Unhealthy/etc.)
-  - Health recommendations based on current AQI
-- **PM2.5**: Fine particulate matter concentration in µg/m³
-- **Filter Life Remaining** (Diagnostic): Shows remaining filter life as percentage
-- **Total Runtime** (Diagnostic): Total operating hours of the device
+Each configured shutter creates one `cover` entity (device class: `shutter`):
 
-### Binary Sensors
+- **Open**: Fully retracts the shutter
+- **Close**: Fully lowers the shutter
+- **Stop**: Stops the shutter mid-travel
 
-- **API Connection**: Shows whether the connection to the API is active
-  - On: Connected and receiving data
-  - Off: Connection lost or authentication failed
-  - Shows update interval and API endpoint information
-- **Filter Replacement Needed**: Alerts when filter needs replacement
-  - Shows estimated days remaining
-  - Turns on when filter life is low
+**Tilt (ventilation models only — ShutterItalia, Sunshade, Skylight, Screen, etc.):**
 
-### Switches
+- **Open Tilt**: Opens the flap slats to allow ventilation (採風 position)
+- **Close Tilt**: Closes the flap slats
 
-- **Child Lock**: Prevents accidental button presses on the device
-  - Icon changes based on state (locked/unlocked)
-- **LED Display**: Enable/disable the LED display
-  - Disabled by default - enable in entity settings if needed
+The tilt feature is automatically enabled or disabled based on the detected product type.
 
-### Select
+**Extra state attributes:**
 
-- **Fan Speed**: Choose from Low, Medium, High, or Auto
-  - Icon changes dynamically based on selected speed
-  - Auto mode adjusts speed based on air quality
-  - Syncs bidirectionally with the Air Purifier fan entity
-
-### Number
-
-- **Target Humidity**: Set desired humidity level (30-80%)
-  - Adjustable in 5% increments
-  - Displayed as a slider in the UI
-
-### Button
-
-- **Reset Filter Timer**: Reset the filter life to 100%
-  - Press to reset after replacing the filter
-  - Instantly updates the Filter Life Remaining sensor
-
-### Fan
-
-- **Air Purifier**: Control the air purifier fan speed and power
-  - Three speed levels: Low, Medium, High
-  - Syncs bidirectionally with the Fan Speed select entity
-  - Turn on/off functionality
-
-## Custom Services
-
-The integration provides services for advanced automation:
-
-### `lixil_shutter.example_action`
-
-Perform a custom action (customize this for your needs).
-
-**Example:**
-
-```yaml
-service: lixil_shutter.example_action
-data:
-  # Add your parameters here
-```
-
-### `lixil_shutter.reload_data`
-
-Manually refresh data from the API without waiting for the update interval.
-
-**Example:**
-
-```yaml
-service: lixil_shutter.reload_data
-```
-
-Use these services in automations or scripts for more control.
+Attribute | Description
+-- | --
+`ble_address` | Bluetooth address of the device
+`product_type` | Detected product type (e.g., `ShutterItalia`, `Sunshade`)
 
 ## Configuration Options
 
 ### During Setup
 
-Name | Required | Description
--- | -- | --
-Username | Yes | Your account username
-Password | Yes | Your account password
+No credentials are required. The setup wizard shows the detected device and asks for confirmation only.
 
 ### After Setup (Options)
 
@@ -224,44 +135,27 @@ You can change these anytime by clicking **Configure**:
 
 Name | Default | Description
 -- | -- | --
-Update Interval | 1 hour | How often to refresh data
-Enable Debugging | Off | Enable extra debug logging
+Poll Interval | 300 s (5 min) | How often HA polls the shutter for its current state
+Command Monitor Window | 30 s | How long the BLE connection stays open after a command (to receive the completion notification)
 
 ## Troubleshooting
 
-### Authentication Issues
+### Device Not Found During Setup
 
-#### Reauthentication
+If no devices appear in the list:
 
-If your credentials expire or change, Home Assistant will automatically prompt you to reauthenticate:
+1. Make sure the shutter is in pairing mode (check your device manual)
+2. Confirm your Home Assistant host has Bluetooth capability or an ESPHome Bluetooth Proxy is configured
+3. Move the shutter closer to the Bluetooth adapter and try again
+4. Check that the device is not already configured (each shutter can only be added once)
 
-1. Go to **Settings** → **Devices & Services**
-2. Look for **"Action Required"** or **"Configuration Required"** message on the integration
-3. Click **"Reconfigure"** or follow the prompt
-4. Enter your updated credentials
-5. Click Submit
+### Shutter Shows "Unavailable"
 
-The integration will automatically resume normal operation with the new credentials.
+If the cover entity shows unavailable:
 
-#### Manual Credential Update
-
-You can also update credentials at any time without waiting for an error:
-
-1. Go to **Settings** → **Devices & Services**
-2. Find **Lixil Bluetooth Shutter**
-3. Click the **3 dots menu** → **Reconfigure**
-4. Enter new username/password
-5. Click Submit
-
-#### Connection Status
-
-Monitor your connection status with the **API Connection** binary sensor:
-
-- **On** (Connected): Integration is receiving data normally
-- **Off** (Disconnected): Connection lost or authentication failed
-  - Check the binary sensor attributes for diagnostic information
-  - Verify credentials if authentication failed
-  - Check network connectivity
+1. Check that the shutter is powered on and within Bluetooth range
+2. Check Home Assistant logs for BLE connection errors
+3. Download integration diagnostics: **Settings** → **Devices & Services** → **Lixil Bluetooth Shutter** → 3 dots → **Download Diagnostics**
 
 ### Enable Debug Logging
 
@@ -273,26 +167,6 @@ logger:
   logs:
     custom_components.lixil_shutter: debug
 ```
-
-### Common Issues
-
-#### Authentication Errors
-
-If you receive authentication errors:
-
-1. Verify your username and password are correct
-2. Check that your account has the necessary permissions
-3. Wait for the automatic reauthentication prompt, or manually reconfigure
-4. Check the API Connection binary sensor for status
-
-#### Device Not Responding
-
-If your device is not responding:
-
-1. Check the **API Connection** binary sensor - it should be "On"
-2. Check your network connection
-3. Verify the device is powered on
-4. Check the integration diagnostics (Settings → Devices & Services → Lixil Bluetooth Shutter → 3 dots → Download diagnostics)
 
 ## 🤝 Contributing
 
@@ -336,16 +210,7 @@ Both options give you the same fully-configured development environment with Hom
 >
 > This integration was developed with assistance from AI coding agents (GitHub Copilot, Claude, and others). While the codebase follows Home Assistant Core standards, AI-generated code may not be reviewed or tested to the same extent as manually written code.
 >
-> AI tools were used to:
->
-> - Generate boilerplate code following Home Assistant patterns
-> - Implement standard integration features (config flow, coordinator, entities)
-> - Ensure code quality and type safety
-> - Write documentation and comments
->
-> Please be aware that AI-assisted development may result in unexpected behavior or edge cases that haven't been thoroughly tested. If you encounter any issues, please [open an issue](../../issues) on GitHub.
->
-> *Note: This section can be removed or modified if AI assistance was not used in your integration's development.*
+> If you encounter any issues, please [open an issue](../../issues) on GitHub.
 
 ---
 
@@ -367,10 +232,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 [maintenance-shield]: https://img.shields.io/badge/maintainer-%40nogic1008-blue.svg?style=for-the-badge
 [releases-shield]: https://img.shields.io/github/release/nogic1008/ha_lixil_shutter.svg?style=for-the-badge
 [releases]: https://github.com/nogic1008/ha_lixil_shutter/releases
-[user_profile]: https://github.com/jpawlowski
+[user_profile]: https://github.com/nogic1008
 
 <!-- Optional badge definitions - uncomment if needed:
-[buymecoffee]: https://www.buymeacoffee.com/jpawlowski
+[buymecoffee]: https://www.buymeacoffee.com/nogic1008
 [buymecoffeebadge]: https://img.shields.io/badge/buy%20me%20a%20coffee-donate-yellow.svg?style=for-the-badge
 [discord]: https://discord.gg/Qa5fW2R
 [discord-shield]: https://img.shields.io/discord/330944238910963714.svg?style=for-the-badge

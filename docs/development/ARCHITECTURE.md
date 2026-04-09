@@ -6,284 +6,121 @@ This document describes the technical architecture of the Lixil Bluetooth Shutte
 
 ```text
 custom_components/lixil_shutter/
-├── __init__.py              # Integration setup and unload
-├── config_flow.py           # Config flow entry point
-├── const.py                 # Constants and configuration keys
-├── coordinator/             # Data update coordinator package
-│   ├── __init__.py          # Exports LixilShutterDataUpdateCoordinator
-│   ├── base.py              # Main coordinator class
-│   ├── data_processing.py   # Data validation and transformation
-│   ├── error_handling.py    # Error recovery and retry logic
-│   └── listeners.py         # Entity callbacks and event listeners
-├── data.py                  # Data classes and type definitions
-├── diagnostics.py           # Diagnostic data for troubleshooting
-├── entity/                  # Base entity package
-│   ├── __init__.py          # Exports LixilShutterEntity
-│   └── base.py              # Base entity class implementation
-├── manifest.json            # Integration metadata
-├── repairs.py               # Repair flows for fixing issues
-├── services.yaml            # Service action definitions (legacy filename)
-├── api/                     # External API communication
-│   ├── __init__.py
-│   └── client.py            # API client implementation
+├── __init__.py              # Integration setup, BLE callback registration, platform setup
+├── config_flow.py           # Config flow entry point (delegates to config_flow_handler/)
+├── const.py                 # Constants: BLE UUIDs, commands, status codes, product types
+├── data.py                  # LixilShutterData dataclass and LixilShutterConfigEntry type alias
+├── diagnostics.py           # Diagnostic data (BLE status, device/entity registry info)
+├── manifest.json            # Integration metadata, BLE SERVICE_UUID for discovery
+├── repairs.py               # Repair flow templates
+├── services.yaml            # Service action definitions (currently empty — no custom services)
+├── api/                     # BLE GATT client
+│   ├── __init__.py          # Exports LixilShutterBleClient, exceptions
+│   ├── _bluez.py            # BlueZ D-Bus pairing helper (local adapter only)
+│   ├── client.py            # LixilShutterBleClient (on-demand BLE connection, GATT notifications)
+│   └── exceptions.py        # LixilShutterBleClientError, LixilShutterBleClientCommunicationError
 ├── config_flow_handler/     # Config flow implementation
 │   ├── __init__.py          # Package exports
-│   ├── handler.py           # Backward compatibility wrapper
-│   ├── config_flow.py       # Main config flow (user, reauth, reconfigure)
-│   ├── options_flow.py      # Options flow
-│   ├── subentry_flow.py     # Subentry flow template
-│   ├── schemas/             # Voluptuous schemas
-│   │   ├── __init__.py      # Schema exports
-│   │   ├── config.py        # Config flow schemas
-│   │   └── options.py       # Options flow schemas
-│   └── validators/          # Input validation
-│       ├── __init__.py      # Validator exports
-│       ├── credentials.py   # Credential validation
-│       └── sanitizers.py    # Input sanitizers
-├── entity_utils/            # Entity helper utilities
-│   ├── __init__.py
-│   ├── device_info.py       # Device information helpers
-│   └── state_helpers.py     # State management utilities
-├── service_actions/         # Service action implementations
-│   ├── __init__.py
-│   └── example_service.py   # Example service action handler
-├── translations/            # Localization files
-│   └── en.json              # English translations
-└── <platform>/              # Platform-specific implementations
-    ├── __init__.py          # Platform setup
-    └── <entity>.py          # Individual entity implementations
+│   ├── config_flow.py       # bluetooth + user + confirm + pair steps
+│   ├── options_flow.py      # Options flow (poll interval, command monitor window)
+│   └── schemas/             # Voluptuous schemas for options form
+├── cover/                   # Cover platform
+│   ├── __init__.py          # async_setup_entry() — registers LixilShutterCover
+│   └── shutter.py           # LixilShutterCover entity
+├── service_actions/         # Service action handlers (currently empty)
+│   └── __init__.py
+└── translations/            # Localization files
+    ├── en.json
+    └── ja.json
 ```
 
 ## Core Components
 
-### Data Update Coordinator
+### BLE Client
 
-**Directory:** `coordinator/`
+**File:** `api/client.py`
 
-The coordinator package manages periodic data fetching from the external API and distributes
-updates to all entities. It is organized as a package with separate modules for different concerns:
+`LixilShutterBleClient` manages the full BLE lifecycle for one shutter:
 
-**Package structure:**
+- **On-demand connection**: Connects only when a command or status poll is issued. No permanently held BLE link.
+- **Idle-disconnect timer**: After each command or poll, the client schedules automatic disconnection (`_IDLE_DISCONNECT_SEC` or caller-supplied `idle_after`). This frees the BLE link for other clients (e.g., physical remote).
+- **GATT notifications**: Status updates pushed by the device via the UCG_IN characteristic are delivered to a registered callback without requiring polling.
+- **Command encoding**: All BLE byte-level details are encapsulated here. Callers use semantic methods (`open()`, `close()`, `stop()`, `open_flap_slats()`, `request_status()`).
+- **Bluetooth Proxy support**: Detects ESPHome/ESP32 Bluetooth Proxy via `BLEDevice.details`; skips D-Bus operations and delegates BLE-level bonding to the proxy.
 
-- `base.py` - Main coordinator class (`LixilShutterDataUpdateCoordinator`)
-- `data_processing.py` - Data validation, transformation, and caching utilities
-- `error_handling.py` - Error recovery strategies, retry logic, and circuit breaker patterns
-- `listeners.py` - Entity callbacks, event listeners, and performance monitoring
+**BLE pairing**: For local BlueZ adapters, pairing is handled by `api/_bluez.py` via BlueZ D-Bus `Pair()`. For Bluetooth Proxy devices, pairing is handled by the ESP32 chip through bleak.
 
-**Core functionality:**
+### Cover Entity
 
-- Configurable update interval (default: 5 minutes)
-- Error handling with exponential backoff
-- Shared data access for all entities
-- Automatic retry on transient failures
-- Data validation and transformation before distribution
-- Performance monitoring and metrics
+**File:** `cover/shutter.py`
 
-**Key class:** `LixilShutterDataUpdateCoordinator` (exported from `coordinator/__init__.py`)
+`LixilShutterCover` is the single `cover` entity created per configured shutter:
 
-**Design rationale:**
+- Holds an `LixilShutterBleClient` instance (shared via `entry.runtime_data.client`)
+- Registers a GATT notification callback on `async_added_to_hass`
+- Schedules a periodic status-poll timer using `async_track_time_interval`
+- Cleans up the BLE connection on `async_will_remove_from_hass`
+- Updates state optimistically on commands; confirmed via GATT notification
 
-The coordinator is structured as a package rather than a single file to support future extensibility:
+**Supported features:**
 
-- **Separation of concerns**: Core logic, error handling, and data processing are isolated
-- **Easy extension**: New features (caching, metrics, webhooks) can be added as new modules
-- **Maintainability**: Individual modules stay focused and manageable (<400 lines)
-- **Testability**: Each module can be tested independently
+| Feature | All models | Ventilation models |
+| ------- | ---------- | ------------------ |
+| OPEN | ✅ | ✅ |
+| CLOSE | ✅ | ✅ |
+| STOP | ✅ | ✅ |
+| OPEN_TILT | — | ✅ |
+| CLOSE_TILT | — | ✅ |
 
-### API Client
-
-**Directory:** `api/`
-
-Handles all communication with external APIs or devices. Implements:
-
-- Async HTTP requests using `aiohttp`
-- Connection management and timeouts
-- Authentication handling
-- Error translation to custom exceptions
-
-**Key class:** `LixilShutterApiClient`
+Ventilation models: types 2–7 (ShutterItalia, Sunshade, Skylight, Screen, ACAdapter, InHouseGarage).
 
 ### Config Flow
 
 **Directory:** `config_flow_handler/`
 
-Implements the configuration UI for adding and configuring the integration. The package
-is organized modularly to support complex flows without becoming monolithic.
+Supports two registration paths:
 
-**Structure:**
+1. **Bluetooth discovery** (`async_step_bluetooth`): Triggered by HA when a device advertising the integration's `SERVICE_UUID` is detected. Only proceeds when the device is in pairing mode (`PAIRING_MODE_BIT` set in manufacturer data).
+2. **Manual setup** (`async_step_user`): User opens "Add Integration". Shows a selector of discovered devices in pairing mode. Aborts with `no_devices_found` if none are detected.
 
-- `config_flow.py`: Main flow (user setup, reauth, reconfigure)
-- `options_flow.py`: Options flow for post-setup configuration
-- `schemas/`: Voluptuous schemas for all forms
-- `validators/`: Validation logic separated from flow logic
-- `subentry_flow.py`: Template for multi-device/location support
+Both paths converge at:
 
-**Supported flows:**
+- `async_step_confirm` — Shows device name, address, product type; user confirms
+- `async_step_pair` — Executes BLE pairing; retries on failure
 
-- Initial user setup with validation
-- Options flow for reconfiguration
-- Reauthentication flow for expired credentials
-- Ready for subentry flows (multi-device support)
+**Options flow** (`options_flow.py`): Single-step form with:
 
-**Key classes:**
-
-- `LixilShutterConfigFlowHandler` (main flow)
-- `LixilShutterOptionsFlow` (options)
-
-### Base Entity
-
-**Package:** `entity/`
-
-Provides common functionality for all entities in the integration:
-
-- Device information
-- Unique ID generation
-- Coordinator integration
-- Availability tracking
-
-**Key class:** `LixilShutterEntity` (in `entity/base.py`)
-
-## Platform Organization
-
-Each platform (sensor, binary_sensor, switch, etc.) follows this pattern:
-
-```text
-<platform>/
-├── __init__.py              # Platform setup: async_setup_entry()
-└── <entity_name>.py         # Individual entity implementation
-```
-
-Platform entities inherit from both:
-
-1. Home Assistant platform base (e.g., `SensorEntity`)
-2. `LixilShutterEntity` for common functionality
+- **Poll interval** (`CONF_POLL_INTERVAL`): BLE status-poll frequency in seconds
+- **Command monitor window** (`CONF_COMMAND_MONITOR`): Post-command BLE connection hold time in seconds
 
 ## Data Flow
 
-```text
-┌─────────────────┐
-│  Config Entry   │ ← Created by config flow
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│   Coordinator   │ ← Fetches data from API every 5 min
-└────────┬────────┘
-         │
-         ▼
-    ┌────┴────┐
-    │  Data   │ ← Stored in coordinator.data
-    └────┬────┘
-         │
-    ┌────┴────────────────┐
-    │                     │
-    ▼                     ▼
-┌─────────┐         ┌─────────┐
-│ Sensor  │         │ Switch  │ ← Entities read from coordinator
-└─────────┘         └─────────┘
+No coordinator is used. The cover entity communicates with the BLE client directly:
+
+```mermaid
+flowchart TD
+    CF["Config Flow\n(bluetooth / user step)"]
+    CE["Config Entry\nentry.runtime_data.client"]
+    BLE["LixilShutterBleClient\non-demand BLE · GATT notifications"]
+    DEV["LIXIL MyWindow Shutter\n(BLE device)"]
+    COV["LixilShutterCover\ncover entity · state management"]
+    HA["Home Assistant\nState Machine"]
+    TIMER["async_track_time_interval\nperiodic poll timer"]
+
+    CF -->|"creates"| CE
+    CE -->|"entry.runtime_data.client"| COV
+    COV -->|"open / close / stop / request_status"| BLE
+    BLE <-->|"BLE GATT (UCG_OUT write / UCG_IN notify)"| DEV
+    DEV -->|"status notification (push)"| BLE
+    BLE -->|"_on_status_notification callback"| COV
+    TIMER -->|"async_update() every poll_interval"| COV
+    COV -->|"async_write_ha_state()"| HA
 ```
 
-## AI Agent Instructions
+State update triggers:
 
-This project includes comprehensive instruction files for AI coding assistants (GitHub Copilot, Claude, etc.) to ensure consistent code generation that follows Home Assistant patterns and project conventions.
-
-### Instruction File Architecture
-
-**Layered approach:**
-
-1. **`AGENTS.md`** - High-level "survival guide" for all AI agents (project overview, workflow, validation)
-2. **`.github/instructions/*.instructions.md`** - Detailed path-specific patterns (applied based on file being edited)
-3. **`.github/copilot-instructions.md`** - GitHub Copilot-specific workflow guidance
-
-### Available Instruction Files
-
-| File | Applies To | Purpose |
-|------|------------|---------|
-| `python.instructions.md` | `**/*.py` | Python code style, imports, type hints, async patterns, linting |
-| `yaml.instructions.md` | `**/*.yaml`, `**/*.yml` | YAML formatting, Home Assistant YAML conventions |
-| `json.instructions.md` | `**/*.json` | JSON formatting, schema validation, no trailing commas |
-| `markdown.instructions.md` | `**/*.md` | Markdown formatting, documentation structure, linting |
-| `manifest.instructions.md` | `**/manifest.json` | Integration manifest requirements, quality scale, IoT class |
-| `configuration_yaml.instructions.md` | `**/configuration.yaml` | Home Assistant configuration patterns (deprecated for device integrations) |
-| `config_flow.instructions.md` | `**/config_flow_handler/**/*.py`, `**/config_flow.py` | Config flow patterns, discovery, reauth, reconfigure, unique IDs |
-| `service_actions.instructions.md` | `**/service_actions/**/*.py` | Service action implementation, registration in `async_setup()`, error handling |
-| `services_yaml.instructions.md` | `**/services.yaml` | Service action definitions, schema, descriptions, examples (legacy filename) |
-| `entities.instructions.md` | Entity platform files | Entity implementation, EntityDescription, device info, state management |
-| `coordinator.instructions.md` | `**/coordinator/**/*.py`, `**/api/**/*.py` | DataUpdateCoordinator patterns, error handling, caching, pull vs push |
-| `api.instructions.md` | `**/api/**/*.py`, `**/coordinator/**/*.py` | API client implementation, exceptions, rate limiting, pagination |
-| `diagnostics.instructions.md` | `**/diagnostics.py` | Diagnostics data collection, `async_redact_data()` for sensitive data |
-| `repairs.instructions.md` | `**/repairs.py` | Repair flows, issue creation, severity levels, fix flows |
-| `translations.instructions.md` | `**/translations/*.json` | Translation file structure, placeholders, nested keys |
-| `tests.instructions.md` | `tests/**/*.py` | Test patterns, fixtures, mocking, pytest conventions |
-
-**Note:** Entity platform files include: `alarm_control_panel/**/*.py`, `binary_sensor/**/*.py`, `button/**/*.py`, `camera/**/*.py`, `climate/**/*.py`, `cover/**/*.py`, `fan/**/*.py`, `humidifier/**/*.py`, `light/**/*.py`, `lock/**/*.py`, `number/**/*.py`, `select/**/*.py`, `sensor/**/*.py`, `siren/**/*.py`, `switch/**/*.py`, `vacuum/**/*.py`, `water_heater/**/*.py`, `entity/**/*.py`, `entity_utils/**/*.py`
-
-### Instruction File Application
-
-**GitHub Copilot:**
-
-Uses frontmatter `applyTo` patterns to automatically apply instructions based on file being edited:
-
-```yaml
----
-applyTo:
-  - "**/*.py"
----
-```
-
-**Other AI Agents:**
-
-Typically read `AGENTS.md` for project overview and may use path-specific instructions when available.
-
-### Benefits
-
-- ✅ **Consistent code quality** - AI generates code that passes validation on first run
-- ✅ **Home Assistant patterns** - Follows Core development standards and best practices
-- ✅ **Context-aware** - File-specific instructions ensure appropriate patterns
-- ✅ **Reduced iteration** - Fewer validation errors and corrections needed
-- ✅ **Knowledge transfer** - Instructions document project conventions and decisions
-
-### Maintaining Instructions
-
-- Keep `AGENTS.md` concise (high-level guidance only, ~30,000 ft view)
-- Put detailed patterns in path-specific `.instructions.md` files
-- Update instructions when patterns change or new conventions emerge
-- Remove outdated rules to prevent bloat
-- Document major architectural decisions in `DECISIONS.md`
-
-### Using GitHub Copilot Coding Agent
-
-**GitHub Copilot Coding Agent** ([github.com/copilot/agents](https://github.com/copilot/agents)) can autonomously initialize new projects from this template and implement features.
-
-**Template Initialization:**
-
-When creating a repository from this template, you can provide a prompt to Copilot Coding Agent that includes:
-
-- Integration domain, title, and repository details
-- Instructions to run `initialize.sh` in unattended mode with `--force` flag
-- The agent will set up the project and create an initialization pull request
-
-**Working with initialized projects:**
-
-Once a project is initialized, Copilot Coding Agent:
-
-- Automatically reads all instruction files (`AGENTS.md`, `.github/copilot-instructions.md`, `.github/instructions/*.instructions.md`)
-- Runs validation scripts (`script/check`) to verify changes
-- Creates pull requests with comprehensive implementations
-- Can iterate based on test failures and linter errors
-
-**Agent-specific instructions (since November 2025):**
-
-Use `excludeAgent` frontmatter to control which agents use specific instructions:
-
-```yaml
----
-applyTo: "**/*.py"
-excludeAgent: "code-review"  # Only coding-agent uses this
----
-```
-
-See [`.github/COPILOT_CODING_AGENT.md`](../../.github/COPILOT_CODING_AGENT.md) for detailed usage instructions, example prompts, and troubleshooting.
+1. **GATT notification** (push): Device pushes status after any command → `_on_status_notification` callback → immediate state update
+2. **Periodic poll** (pull): `async_track_time_interval` timer fires → `async_update()` → sends STATUS_REQUEST over BLE → device responds via notification
 
 ## Key Design Decisions
 
@@ -291,31 +128,24 @@ See [DECISIONS.md](./DECISIONS.md) for architectural and design decisions made d
 
 ## Extension Points
 
-To add new functionality:
-
 ### Adding a New Platform
 
 1. Create directory: `custom_components/lixil_shutter/<platform>/`
 2. Implement `__init__.py` with `async_setup_entry()`
-3. Create entity classes inheriting from platform base + `LixilShutterEntity`
-4. Add platform to `PLATFORMS` in `const.py`
+3. Create entity classes
+4. Add platform to `PLATFORMS` list in `__init__.py`
 
-### Adding a New Service Action
+### Adding a Service Action
 
 1. Create service action handler in `service_actions/<service_name>.py`
-2. Define service action in `services.yaml` (legacy filename) with schema
+2. Define service action in `services.yaml` with schema
 3. Register service action in `__init__.py:async_setup()` (NOT `async_setup_entry`)
-
-### Modifying Data Structure
-
-1. Update coordinator data type in `coordinator.py`
-2. Adjust API client response parsing in `api/client.py`
-3. Update entity property implementations to match new structure
 
 ## Testing Strategy
 
 - **Unit tests:** Test individual functions and classes in isolation
-- **Integration tests:** Test coordinator with mocked API
+- **BLE client tests:** Use `bleak` mock fixtures to simulate GATT operations
+- **Config flow tests:** Test each step (bluetooth, user, confirm, pair) with `hass` fixture
 - **Fixtures:** Shared test fixtures in `tests/conftest.py`
 
 Tests mirror the source structure under `tests/`.
@@ -324,7 +154,9 @@ Tests mirror the source structure under `tests/`.
 
 Core dependencies (see `manifest.json`):
 
-- `aiohttp` - Async HTTP client
-- Home Assistant 2025.7.0+ - Platform requirements
+- `homeassistant.components.bluetooth` — BLE scanner integration
+- `bleak` / `bleak-retry-connector` — Underlying BLE library (bundled with HA)
+- `dbus-fast` — BlueZ D-Bus pairing for local adapters (transitive HA dependency)
 
-Development dependencies (see `requirements_dev.txt`, `requirements_test.txt`).
+Development dependencies: see `requirements_dev.txt` and `requirements_test.txt`.
+
