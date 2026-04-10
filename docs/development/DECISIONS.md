@@ -128,6 +128,39 @@ Each decision is documented with:
 
 ---
 
+### Motion Window: Optimistic Opening/Closing State After Commands
+
+**Date:** 2026-04-10
+
+**Context:** The LIXIL MyWindow shutter reports `STATUS_OPEN` (i.e., not fully closed) at any intermediate position — whether fully open, halfway, or stopped mid-travel. After issuing an open or close command, the device takes several seconds to complete the motion. During that time it continues to report `STATUS_OPEN` via GATT notifications, so the HA entity would immediately revert from the command's optimistic state (`opening` / `closing`) back to `open`, re-enabling the "open" button instantly even while the shutter is actively closing.
+
+Additionally, when the user stops the shutter mid-travel the device reports `STATUS_OPEN`, causing HA to show state `open` — which disables the "open" button and prevents the user from reopening a partially closed shutter.
+
+> **Device limitation:** Because `STATUS_OPEN` is returned for every non-fully-closed position (fully open, halfway, stopped mid-travel), this integration cannot distinguish "fully open" from "partially open" from BLE notifications alone.  Therefore, `STATUS_OPEN` is mapped to `None` (unknown state in HA) in all cases **except** after the open motion window expires naturally.  Only when the open command has been running uninterrupted for at least `command_monitor` seconds (without a stop command) is the incoming `STATUS_OPEN` treated as `CoverState.OPEN` (fully open).
+
+**Decision:** Introduce a *motion window* driven by `CONF_COMMAND_MONITOR` (default 30 s):
+
+- After a successful **open** command: keep state at `opening` for `command_monitor` seconds. `STATUS_OPEN` notifications are ignored inside the window; `STATUS_CLOSED` / `STATUS_VENTILATION` cancel it immediately.
+- After a successful **close** command: same mechanism, state stays at `closing`.
+- After a successful **stop** command: cancel the motion window, immediately set state to ``None`` (unknown/partial position). Both open and close buttons remain available via ``assumed_state = True``.
+- `_attr_assumed_state = True` is set so HA always renders both the open and close buttons regardless of the current state.
+
+**Rationale:**
+
+- The device cannot report a percentage position — only `STATUS_OPEN` / `STATUS_CLOSED` / `STATUS_VENTILATION`. A motion window is the only way to give users useful in-progress feedback.
+- `command_monitor` already controls the BLE idle-disconnect timeout, so it is a natural proxy for "time the shutter takes to complete a full motion". Reusing it avoids introducing a separate config key.
+- Setting state to `None` (unknown) on stop and on `STATUS_OPEN` outside the open window accurately reflects that the shutter is at an indeterminate position.
+- `assumed_state = True` matches the HA semantic: the integration cannot confirm the exact position, so both actions must always be available.
+
+**Consequences:**
+
+- Users must configure `command_monitor` to roughly match their shutter's full-travel time. If set too short, HA will revert to unknown state before the motion is complete; if set too long, the state stays `opening` / `closing` after the shutter has already finished.
+- If the device completes motion and sends `STATUS_CLOSED` before the window expires, the window is cancelled and the real state is applied immediately — no lag.
+- After the window expires, `async_update()` is automatically called to confirm the final device state over BLE.
+- `STATUS_OPEN` maps to `CoverState.OPEN` (fully open) **only** after the OPENING window expires naturally. In all other cases — initial poll, post-stop poll, mid-travel poll — `STATUS_OPEN` maps to `None` (unknown state).
+
+---
+
 ## Future Considerations
 
 ### Memory Position Command
