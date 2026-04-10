@@ -61,6 +61,13 @@ custom_components/lixil_shutter/
 - Schedules a periodic status-poll timer using `async_track_time_interval`
 - Cleans up the BLE connection on `async_will_remove_from_hass`
 - Updates state optimistically on commands; confirmed via GATT notification
+- `_attr_assumed_state = True`: both open and close buttons are always shown regardless of state, because the shutter reports only `STATUS_OPEN` / `STATUS_CLOSED` and cannot report partial positions
+
+> **Device limitation:** The shutter reports `STATUS_OPEN` for every non-fully-closed position (fully open, halfway, stopped mid-travel).  As a result, `STATUS_OPEN` is mapped to `None` (unknown state) in all cases except after the OPENING motion window expires naturally.  `CoverState.OPEN` (fully open) is only applied when the open command has been running uninterrupted for at least `command_monitor` seconds without a stop command being issued.  It is not possible to distinguish "fully open" from "partially open" via BLE notifications alone.
+
+**Motion window** (`CONF_COMMAND_MONITOR`):
+
+After issuing open or close, the entity holds the `opening` / `closing` state for `command_monitor` seconds.  `STATUS_OPEN` GATT notifications are suppressed during this window so the UI keeps showing motion progress while the shutter travels.  A definitive `STATUS_CLOSED` / `STATUS_VENTILATION` notification cancels the window early.  On stop, state is set to `None` (unknown/partial position) immediately — no window is started.  After the OPENING window expires naturally, the next `STATUS_OPEN` notification is treated as fully open (`CoverState.OPEN`); in all other cases `STATUS_OPEN` maps to `None`.  See [DECISIONS.md](./DECISIONS.md) for background.
 
 **Supported features:**
 
@@ -91,7 +98,7 @@ Both paths converge at:
 **Options flow** (`options_flow.py`): Single-step form with:
 
 - **Poll interval** (`CONF_POLL_INTERVAL`): BLE status-poll frequency in seconds
-- **Command monitor window** (`CONF_COMMAND_MONITOR`): Post-command BLE connection hold time in seconds
+- **Command monitor window** (`CONF_COMMAND_MONITOR`): How long the entity shows `opening` / `closing` after a command, and how long the BLE connection is held open after a command. Should be set to the shutter's approximate full-travel time.
 
 ## Data Flow
 

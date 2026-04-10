@@ -34,15 +34,17 @@ from custom_components.lixil_shutter.const import (
 from homeassistant.components.cover import CoverDeviceClass, CoverEntity, CoverEntityFeature, CoverState
 from homeassistant.core import callback
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 
 if TYPE_CHECKING:
     from custom_components.lixil_shutter.data import LixilShutterConfigEntry
 
 # Mapping from device STATUS_* constants to HA CoverState.
+# STATUS_OPEN is intentionally excluded: it is returned for every non-fully-closed
+# position (fully open, halfway, stopped mid-travel) so it cannot be reliably mapped
+# to CoverState.OPEN.  STATUS_OPEN is handled explicitly in _on_status_notification.
 # STATUS_UNKNOWN and any unrecognised value map to None (unavailable).
 _STATUS_TO_COVER_STATE: dict[str, CoverState] = {
-    STATUS_OPEN: CoverState.OPEN,
     STATUS_CLOSED: CoverState.CLOSED,
     STATUS_VENTILATION: CoverState.CLOSED,
 }
@@ -76,6 +78,7 @@ class LixilShutterCover(CoverEntity):
     _attr_has_entity_name = True
     _attr_name = None  # use device name as entity name
     _attr_should_poll: bool = False  # disable HA built-in polling; we use async_track_time_interval
+    _attr_assumed_state: bool = True  # position is not precisely known; allow both open/close from any state
 
     _BASE_FEATURES = CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE | CoverEntityFeature.STOP
 
@@ -97,6 +100,14 @@ class LixilShutterCover(CoverEntity):
         self._attr_current_cover_tilt_position: int | None = None  # 0 = closed, 100 = ventilation
         self._attr_available: bool = False  # True after first successful BLE operation
         self._attr_unique_id = f"{entry.entry_id}_cover"
+        # Motion window: while active, STATUS_OPEN notifications are suppressed so
+        # the UI keeps showing the optimistic opening/closing state until the timer
+        # expires or a definitive final status (closed/ventilation) arrives.
+        self._motion_state: CoverState | None = None
+        self._motion_unsub: Callable[[], None] | None = None
+        # Set to True when the OPENING window expires naturally (no stop/new command).
+        # The next STATUS_OPEN notification will then be treated as fully open.
+        self._after_opening_window: bool = False
         self._attr_device_info = self._build_device_info()
         self._attr_extra_state_attributes: dict[str, Any] = {
             "ble_address": self._address,
@@ -136,6 +147,7 @@ class LixilShutterCover(CoverEntity):
         callback, and explicitly disconnects the BLE link so the device
         is immediately available to other BLE clients.
         """
+        self._cancel_motion_state()
         if self._unsub_poll is not None:
             self._unsub_poll()
             self._unsub_poll = None
@@ -150,10 +162,37 @@ class LixilShutterCover(CoverEntity):
         Decorated with ``@callback`` — runs on the HA event loop.
         Updates ``_attr_is_*`` fields and writes the new state to HA.
 
+        During the motion window (``_motion_state`` is set), ``STATUS_OPEN``
+        notifications are suppressed so the UI keeps showing the optimistic
+        ``opening`` or ``closing`` state until the window expires.  Any
+        definitive final status (``STATUS_CLOSED`` / ``STATUS_VENTILATION``)
+        cancels the window immediately and applies the real device state.
+
+        ``STATUS_OPEN`` outside the motion window maps to ``None`` (unknown)
+        **except** when the OPENING window has just expired naturally, in which
+        case the shutter is considered fully open and ``CoverState.OPEN`` is used.
+
         Args:
             status: One of STATUS_OPEN, STATUS_CLOSED, STATUS_VENTILATION, STATUS_UNKNOWN.
         """
-        self._apply_state(_STATUS_TO_COVER_STATE.get(status))
+        if self._motion_state is not None:
+            if status == STATUS_OPEN:
+                # Device not yet at final state; keep displaying the motion state.
+                return
+            # Definitive final state arrived — cancel the window and apply it.
+            self._cancel_motion_state()
+        if status == STATUS_OPEN:
+            if self._after_opening_window:
+                # Open window expired naturally → shutter has been opening for
+                # command_monitor seconds without interruption: treat as fully open.
+                self._after_opening_window = False
+                cover_state: CoverState | None = CoverState.OPEN
+            else:
+                # Partial or indeterminate position — state is unknown.
+                cover_state = None
+        else:
+            cover_state = _STATUS_TO_COVER_STATE.get(status)
+        self._apply_state(cover_state)
         if self._client.has_ventilation:
             self._attr_current_cover_tilt_position = _STATUS_TO_TILT_POSITION.get(status)
         self._attr_available = True
@@ -164,27 +203,53 @@ class LixilShutterCover(CoverEntity):
     # ------------------------------------------------------------------
 
     async def async_open_cover(self, **kwargs: Any) -> None:
-        """Open the shutter fully (keyCode=0x03)."""
-        await self._run_command(
+        """Open the shutter fully (keyCode=0x03).
+
+        After a successful command, the entity keeps showing ``opening`` for
+        ``_monitor_sec`` seconds so the UI reflects the ongoing motion.  The
+        window is cancelled early if the device confirms it is closed, or
+        when any new command is issued.
+        """
+        self._cancel_motion_state()
+        if await self._run_command(
             self._client.open(idle_after=self._monitor_sec),
             "Failed to open shutter %s: %s",
             CoverState.OPENING,
-        )
+        ):
+            self._start_motion(CoverState.OPENING)
 
     async def async_close_cover(self, **kwargs: Any) -> None:
         """Close the shutter fully (keyCode=0x04).
 
         On ventilation-type shutters, also closes the flap slats as part of
         the full-close motion.  ``async_close_cover_tilt`` uses this same command.
+
+        After a successful command, the entity keeps showing ``closing`` for
+        ``_monitor_sec`` seconds so the UI reflects the ongoing motion.  The
+        window is cancelled early if the device confirms it is closed, or
+        when any new command is issued.
         """
-        await self._run_command(
+        self._cancel_motion_state()
+        if await self._run_command(
             self._client.close(idle_after=self._monitor_sec),
             "Failed to close shutter %s: %s",
             CoverState.CLOSING,
-        )
+        ):
+            self._start_motion(CoverState.CLOSING)
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
-        """Stop the shutter mid-travel (keyCode=0x05)."""
+        """Stop the shutter mid-travel (keyCode=0x05).
+
+        Cancels any active motion window and immediately sets the state to
+        ``None`` (unknown / partial position) *before* sending the BLE command
+        (optimistic).  This ensures the open and close buttons are re-enabled
+        the moment the user taps stop.  Subsequent device notifications will
+        keep the state unknown until the next confirmed open/close cycle.
+        """
+        self._cancel_motion_state()
+        # Set state to unknown (partial position) immediately so both buttons are enabled.
+        self._apply_state(None)
+        self.async_write_ha_state()
         await self._run_command(
             self._client.stop(idle_after=self._monitor_sec),
             "Failed to stop shutter %s: %s",
@@ -196,6 +261,7 @@ class LixilShutterCover(CoverEntity):
         Available on all types except type=0 and type=1.
         ``CoverEntityFeature.OPEN_TILT`` is enabled for these devices only.
         """
+        self._cancel_motion_state()
         await self._run_command(
             self._client.open_flap_slats(idle_after=self._monitor_sec),
             "Failed to open flap slats on %s: %s",
@@ -208,6 +274,7 @@ class LixilShutterCover(CoverEntity):
         shutter's full-close motion.  Uses the same BLE command as
         ``async_close_cover``.
         """
+        self._cancel_motion_state()
         await self._run_command(
             self._client.close(idle_after=self._monitor_sec),
             "Failed to close flap slats on %s: %s",
@@ -249,12 +316,47 @@ class LixilShutterCover(CoverEntity):
         if state is None:
             self._attr_current_cover_tilt_position = None
 
+    @callback
+    def _cancel_motion_state(self) -> None:
+        """Cancel the active motion window if any."""
+        if self._motion_unsub is not None:
+            self._motion_unsub()
+            self._motion_unsub = None
+        self._motion_state = None
+        self._after_opening_window = False
+
+    @callback
+    def _start_motion(self, state: CoverState) -> None:
+        """Start the motion window for *state* (OPENING or CLOSING).
+
+        Records the expected motion direction so that STATUS_OPEN notifications
+        are suppressed during the window.  Schedules a poll when the window
+        expires so the real device state is confirmed.
+        """
+        self._motion_state = state
+        self._motion_unsub = async_call_later(self.hass, self._monitor_sec, self._on_motion_expired)
+
+    @callback
+    def _on_motion_expired(self, _now: Any) -> None:
+        """Motion window expired; poll the device for its current state.
+
+        If the window was for OPENING, sets ``_after_opening_window`` so that
+        the next ``STATUS_OPEN`` notification is interpreted as fully open rather
+        than unknown.
+        """
+        self._motion_unsub = None
+        was_opening = self._motion_state == CoverState.OPENING
+        self._motion_state = None
+        if was_opening:
+            self._after_opening_window = True
+        self.hass.async_create_task(self.async_update())
+
     async def _run_command(
         self,
         cmd: Awaitable[None],
         error_msg: str,
         optimistic_state: CoverState | None = None,
-    ) -> None:
+    ) -> bool:
         """Run a BLE command with standard error handling.
 
         Optionally sets an optimistic state before sending the command.
@@ -265,6 +367,9 @@ class LixilShutterCover(CoverEntity):
             cmd: Coroutine to await (BLE client command).
             error_msg: ``LOGGER.error`` template; receives address and exception.
             optimistic_state: State to set before sending (e.g. ``CoverState.OPENING``).
+
+        Returns:
+            ``True`` if the command succeeded, ``False`` otherwise.
         """
         if optimistic_state is not None:
             self._apply_state(optimistic_state)
@@ -276,8 +381,10 @@ class LixilShutterCover(CoverEntity):
             self._attr_available = False
             self._apply_state(None)
             self.async_write_ha_state()
+            return False
         else:
             self._attr_available = True
+            return True
 
     @property
     def _monitor_sec(self) -> float:
