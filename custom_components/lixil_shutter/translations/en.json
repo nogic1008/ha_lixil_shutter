@@ -27,5 +27,20 @@
       "no_devices_found": "No shutters in pairing mode were found nearby. Hold the remote pairing button for 5\u201310 seconds until the shutter moves slightly up and down, then try adding the integration again.",
       "not_in_pairing_mode": "This shutter is not in pairing mode. Hold the remote pairing button for 5\u201310 seconds until the shutter moves slightly up and down to enter pairing mode."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "poll_interval": "Status poll interval",
+          "command_monitor": "Open/close motion duration"
+        },
+        "data_description": {
+          "poll_interval": "How often the shutter status is polled over BLE (seconds).",
+          "command_monitor": "Estimated seconds for a full open or close motion. Set this to roughly how long your shutter takes to fully open or close. The shutter will show 'opening' or 'closing' for this duration after a command is sent."
+        }
+      }
+    }
   }
 }
