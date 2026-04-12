@@ -19,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout the repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v6.0.2
 
       - name: Run hassfest validation
         uses: home-assistant/actions/hassfest@55b4a5d23e09d627c2773c2ef82afa98904d65b4 # master
@@ -32,6 +32,6 @@ jobs:
         uses: hacs/action@d556e736723344f83838d08488c983a15381059a # 22.5.0
         with:
           category: integration
-          # Remove 'brands' from ignore when brand images have been added to https://github.com/home-assistant/brands
-          # Remove 'topics' from ignore after setting repository topics (e.g. home-assistant, hacs) in repository settings
-          ignore: brands topics
+          # Since HA 2026.3, brands can be bundled in the integration itself, so uploading to the brands repo is no longer needed.
+          # https://developers.home-assistant.io/blog/2026/02/24/brands-proxy-api/
+          ignore: brands
