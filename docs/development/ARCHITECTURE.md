@@ -67,7 +67,7 @@ custom_components/lixil_shutter/
 
 **Motion window** (`CONF_COMMAND_MONITOR`):
 
-After issuing open or close, the entity holds the `opening` / `closing` state for `command_monitor` seconds.  `STATUS_OPEN` GATT notifications are suppressed during this window so the UI keeps showing motion progress while the shutter travels.  A definitive `STATUS_CLOSED` / `STATUS_VENTILATION` notification cancels the window early.  On stop, state is set to `None` (unknown/partial position) immediately — no window is started.  After the OPENING window expires naturally, the next `STATUS_OPEN` notification is treated as fully open (`CoverState.OPEN`); in all other cases `STATUS_OPEN` maps to `None`.  See [DECISIONS.md](./DECISIONS.md) for background.
+When an open or close command is issued, the entity sets the state to `opening` / `closing` and starts the motion window *before* sending the BLE command.  This ensures that any `STATUS_OPEN` GATT notifications arriving during the BLE round-trip (~1–2 s) are already suppressed.  The window runs for `command_monitor` seconds; a definitive `STATUS_CLOSED` / `STATUS_VENTILATION` notification cancels it early.  If the BLE command fails the window is cancelled immediately.  On stop, state is set to `None` (unknown/partial position) immediately and no window is started.  After the OPENING window expires naturally, the next `STATUS_OPEN` notification is treated as fully open (`CoverState.OPEN`); in all other cases `STATUS_OPEN` maps to `None`.  See [DECISIONS.md](./DECISIONS.md) for background.
 
 **Supported features:**
 
