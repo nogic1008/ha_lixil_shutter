@@ -205,18 +205,20 @@ class LixilShutterCover(CoverEntity):
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Open the shutter fully (keyCode=0x03).
 
-        After a successful command, the entity keeps showing ``opening`` for
-        ``_monitor_sec`` seconds so the UI reflects the ongoing motion.  The
-        window is cancelled early if the device confirms it is closed, or
-        when any new command is issued.
+        The motion window is started *before* the BLE command is sent so that
+        any ``STATUS_OPEN`` GATT notifications arriving during the BLE round-trip
+        (~1–2 s) are already suppressed.  If the command fails the window is
+        cancelled immediately.
         """
         self._cancel_motion_state()
-        if await self._run_command(
+        self._apply_state(CoverState.OPENING)
+        self._start_motion(CoverState.OPENING)
+        self.async_write_ha_state()
+        if not await self._run_command(
             self._client.open(idle_after=self._monitor_sec),
             "Failed to open shutter %s: %s",
-            CoverState.OPENING,
         ):
-            self._start_motion(CoverState.OPENING)
+            self._cancel_motion_state()
 
     async def async_close_cover(self, **kwargs: Any) -> None:
         """Close the shutter fully (keyCode=0x04).
@@ -224,18 +226,18 @@ class LixilShutterCover(CoverEntity):
         On ventilation-type shutters, also closes the flap slats as part of
         the full-close motion.  ``async_close_cover_tilt`` uses this same command.
 
-        After a successful command, the entity keeps showing ``closing`` for
-        ``_monitor_sec`` seconds so the UI reflects the ongoing motion.  The
-        window is cancelled early if the device confirms it is closed, or
-        when any new command is issued.
+        The motion window is started *before* the BLE command is sent (same
+        rationale as ``async_open_cover``).
         """
         self._cancel_motion_state()
-        if await self._run_command(
+        self._apply_state(CoverState.CLOSING)
+        self._start_motion(CoverState.CLOSING)
+        self.async_write_ha_state()
+        if not await self._run_command(
             self._client.close(idle_after=self._monitor_sec),
             "Failed to close shutter %s: %s",
-            CoverState.CLOSING,
         ):
-            self._start_motion(CoverState.CLOSING)
+            self._cancel_motion_state()
 
     async def async_stop_cover(self, **kwargs: Any) -> None:
         """Stop the shutter mid-travel (keyCode=0x05).
