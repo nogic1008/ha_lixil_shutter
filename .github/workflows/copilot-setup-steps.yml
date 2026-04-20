@@ -29,15 +29,20 @@ permissions:
 jobs:
   copilot-setup-steps:
     runs-on: ubuntu-latest
+    env:
+      # Use repository variable vars.HA_VERSION if set, otherwise fall back to the default.
+      # Set via: GitHub Settings > Secrets and variables > Variables > New repository variable
+      HA_VERSION: ${{ vars.HA_VERSION || '2026.4.3' }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@v6.0.2
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@v6.2.0
+        id: setup-python
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
@@ -46,21 +51,16 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "**/requirements*.txt"
 
-      - name: Get Home Assistant version
-        id: ha_version
-        run: |
-          HA_VERSION=$(grep '"homeassistant"' hacs.json | head -1 | sed 's/.*"homeassistant"\s*:\s*"\([^"]*\)".*/\1/')
-          echo "HA_VERSION=${HA_VERSION}" >> $GITHUB_OUTPUT
-          echo "Home Assistant version: ${HA_VERSION}"
-
       - name: Cache Home Assistant installation
         uses: actions/cache@v5.0.5
         with:
           path: |
             .local/ha-venv
-          key: ha-venv-${{ runner.os }}-py313-ha${{ steps.ha_version.outputs.HA_VERSION }}-${{ hashFiles('**/requirements*.txt') }}
+          key: ha-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-ha${{ env.HA_VERSION }}-${{ hashFiles('**/requirements*.txt') }}
           restore-keys: |
-            ha-venv-${{ runner.os }}-py313-ha${{ steps.ha_version.outputs.HA_VERSION }}-
+            ha-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-ha${{ env.HA_VERSION }}-
+            ha-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
+            ha-venv-${{ runner.os }}-
 
       - name: Install dependencies
         run: script/setup/bootstrap
