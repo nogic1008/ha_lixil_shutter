@@ -63,18 +63,18 @@ custom_components/lixil_shutter/
 - Updates state optimistically on commands; confirmed via GATT notification
 - `_attr_assumed_state = True`: both open and close buttons are always shown regardless of state, because the shutter reports only `STATUS_OPEN` / `STATUS_CLOSED` and cannot report partial positions
 
-> **Device limitation:** The shutter reports `STATUS_OPEN` for every non-fully-closed position (fully open, halfway, stopped mid-travel).  As a result, `STATUS_OPEN` is mapped to `None` (unknown state) in all cases except after the OPENING motion window expires naturally.  `CoverState.OPEN` (fully open) is only applied when the open command has been running uninterrupted for at least `command_monitor` seconds without a stop command being issued.  It is not possible to distinguish "fully open" from "partially open" via BLE notifications alone.
+> **Device limitation:** The shutter reports `STATUS_OPEN` for every non-fully-closed position (fully open, halfway, stopped mid-travel).  As a result, `STATUS_OPEN` is mapped to `None` (unknown state) in all cases except after the OPENING motion timer expires naturally.  `CoverState.OPEN` (fully open) is only applied when the open command has been running uninterrupted for at least `command_monitor` seconds without a stop command being issued.  It is not possible to distinguish "fully open" from "partially open" via BLE notifications alone.
 
-**Motion window** (`CONF_COMMAND_MONITOR`):
+**Motion timer** (`CONF_COMMAND_MONITOR`):
 
-When an open or close command is issued, the entity sets the state to `opening` / `closing` and starts the motion window before sending the BLE command so that GATT notifications arriving during the BLE round-trip (~1–2 s) are already covered by the window.
+When an open or close command is issued, the entity sets the state to `opening` / `closing` and starts the motion timer before sending the BLE command so that GATT notifications arriving during the BLE round-trip (~1–2 s) are already covered by the timer.
 
 Notification suppression differs by direction:
 
-- **OPENING window**: all notifications suppressed. The device reports `STATUS_CLOSED` (its current position) before the shutter starts moving; accepting it would revert the state to `closed` immediately.
-- **CLOSING window**: `STATUS_OPEN` suppressed; `STATUS_CLOSED` / `STATUS_VENTILATION` cancel the window early and apply the confirmed final state.
+- **OPENING timer**: all notifications suppressed. The device reports `STATUS_CLOSED` (its current position) before the shutter starts moving; accepting it would revert the state to `closed` immediately.
+- **CLOSING timer**: `STATUS_OPEN` suppressed; `STATUS_CLOSED` / `STATUS_VENTILATION` cancel the timer early and apply the confirmed final state.
 
-If the BLE command fails the window is cancelled immediately. On stop, state is set to `None` (unknown/partial position) immediately and no window is started. After the OPENING window expires naturally, the next `STATUS_OPEN` notification is treated as fully open (`CoverState.OPEN`); in all other cases `STATUS_OPEN` maps to `None`. See [DECISIONS.md](./DECISIONS.md) for background.
+If the BLE command fails the timer is cancelled immediately. On stop, state is set to `None` (unknown/partial position) immediately and no timer is started. After the OPENING timer expires naturally, the next `STATUS_OPEN` notification is treated as fully open (`CoverState.OPEN`); in all other cases `STATUS_OPEN` maps to `None`. See [DECISIONS.md](./DECISIONS.md) for background.
 
 **Supported features:**
 

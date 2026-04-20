@@ -100,14 +100,14 @@ class LixilShutterCover(CoverEntity):
         self._attr_current_cover_tilt_position: int | None = None  # 0 = closed, 100 = ventilation
         self._attr_available: bool = False  # True after first successful BLE operation
         self._attr_unique_id = f"{entry.entry_id}_cover"
-        # Motion window: while active, STATUS_OPEN notifications are suppressed so
+        # Motion timer: while active, STATUS_OPEN notifications are suppressed so
         # the UI keeps showing the optimistic opening/closing state until the timer
         # expires or a definitive final status (closed/ventilation) arrives.
         self._motion_state: CoverState | None = None
         self._motion_unsub: Callable[[], None] | None = None
-        # Set to True when the OPENING window expires naturally (no stop/new command).
+        # Set to True when the OPENING timer expires naturally (no stop/new command).
         # The next STATUS_OPEN notification will then be treated as fully open.
-        self._after_opening_window: bool = False
+        self._after_opening_timer: bool = False
         self._attr_device_info = self._build_device_info()
         self._attr_extra_state_attributes: dict[str, Any] = {
             "ble_address": self._address,
@@ -162,19 +162,19 @@ class LixilShutterCover(CoverEntity):
         Decorated with ``@callback`` — runs on the HA event loop.
         Updates ``_attr_is_*`` fields and writes the new state to HA.
 
-        During the motion window (``_motion_state`` is set), GATT notifications
+        During the motion timer (``_motion_state`` is set), GATT notifications
         are handled differently depending on direction:
 
-        - **OPENING window**: all notifications are suppressed.  The device
+        - **OPENING timer**: all notifications are suppressed.  The device
           reports ``STATUS_CLOSED`` (its current position) before the shutter
-          actually starts moving; accepting that would cancel the window and
+          actually starts moving; accepting that would cancel the timer and
           revert the state to ``closed`` immediately.
-        - **CLOSING window**: ``STATUS_OPEN`` is suppressed (shutter still
+        - **CLOSING timer**: ``STATUS_OPEN`` is suppressed (shutter still
           travelling).  ``STATUS_CLOSED`` / ``STATUS_VENTILATION`` cancel the
-          window early and apply the confirmed final state.
+          timer early and apply the confirmed final state.
 
-        ``STATUS_OPEN`` outside any motion window maps to ``None`` (unknown)
-        **except** when the OPENING window has just expired naturally, in which
+        ``STATUS_OPEN`` outside any motion timer maps to ``None`` (unknown)
+        **except** when the OPENING timer has just expired naturally, in which
         case the shutter is considered fully open and ``CoverState.OPEN`` is used.
 
         Args:
@@ -191,10 +191,10 @@ class LixilShutterCover(CoverEntity):
             # STATUS_CLOSED / STATUS_VENTILATION arrived — shutter reached final state.
             self._cancel_motion_state()
         if status == STATUS_OPEN:
-            if self._after_opening_window:
-                # Open window expired naturally → shutter has been opening for
+            if self._after_opening_timer:
+                # Open timer expired naturally → shutter has been opening for
                 # command_monitor seconds without interruption: treat as fully open.
-                self._after_opening_window = False
+                self._after_opening_timer = False
                 cover_state: CoverState | None = CoverState.OPEN
             else:
                 # Partial or indeterminate position — state is unknown.
@@ -214,9 +214,9 @@ class LixilShutterCover(CoverEntity):
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Open the shutter fully (keyCode=0x03).
 
-        The motion window is started *before* the BLE command is sent so that
+        The motion timer is started *before* the BLE command is sent so that
         any ``STATUS_OPEN`` GATT notifications arriving during the BLE round-trip
-        (~1–2 s) are already suppressed.  If the command fails the window is
+        (~1–2 s) are already suppressed.  If the command fails the timer is
         cancelled immediately.
         """
         self._cancel_motion_state()
@@ -235,7 +235,7 @@ class LixilShutterCover(CoverEntity):
         On ventilation-type shutters, also closes the flap slats as part of
         the full-close motion.  ``async_close_cover_tilt`` uses this same command.
 
-        The motion window is started *before* the BLE command is sent (same
+        The motion timer is started *before* the BLE command is sent (same
         rationale as ``async_open_cover``).
         """
         self._cancel_motion_state()
@@ -251,7 +251,7 @@ class LixilShutterCover(CoverEntity):
     async def async_stop_cover(self, **kwargs: Any) -> None:
         """Stop the shutter mid-travel (keyCode=0x05).
 
-        Cancels any active motion window and immediately sets the state to
+        Cancels any active motion timer and immediately sets the state to
         ``None`` (unknown / partial position) *before* sending the BLE command
         (optimistic).  This ensures the open and close buttons are re-enabled
         the moment the user taps stop.  Subsequent device notifications will
@@ -329,19 +329,19 @@ class LixilShutterCover(CoverEntity):
 
     @callback
     def _cancel_motion_state(self) -> None:
-        """Cancel the active motion window if any."""
+        """Cancel the active motion timer if any."""
         if self._motion_unsub is not None:
             self._motion_unsub()
             self._motion_unsub = None
         self._motion_state = None
-        self._after_opening_window = False
+        self._after_opening_timer = False
 
     @callback
     def _start_motion(self, state: CoverState) -> None:
-        """Start the motion window for *state* (OPENING or CLOSING).
+        """Start the motion timer for *state* (OPENING or CLOSING).
 
         Records the expected motion direction so that STATUS_OPEN notifications
-        are suppressed during the window.  Schedules a poll when the window
+        are suppressed during the timer.  Schedules a poll when the timer
         expires so the real device state is confirmed.
         """
         self._motion_state = state
@@ -349,9 +349,9 @@ class LixilShutterCover(CoverEntity):
 
     @callback
     def _on_motion_expired(self, _now: Any) -> None:
-        """Motion window expired; poll the device for its current state.
+        """Motion timer expired; poll the device for its current state.
 
-        If the window was for OPENING, sets ``_after_opening_window`` so that
+        If the timer was for OPENING, sets ``_after_opening_timer`` so that
         the next ``STATUS_OPEN`` notification is interpreted as fully open rather
         than unknown.
         """
@@ -359,7 +359,7 @@ class LixilShutterCover(CoverEntity):
         was_opening = self._motion_state == CoverState.OPENING
         self._motion_state = None
         if was_opening:
-            self._after_opening_window = True
+            self._after_opening_timer = True
         self.hass.async_create_task(self.async_update())
 
     async def _run_command(
