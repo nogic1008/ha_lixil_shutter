@@ -162,13 +162,18 @@ class LixilShutterCover(CoverEntity):
         Decorated with ``@callback`` — runs on the HA event loop.
         Updates ``_attr_is_*`` fields and writes the new state to HA.
 
-        During the motion window (``_motion_state`` is set), ``STATUS_OPEN``
-        notifications are suppressed so the UI keeps showing the optimistic
-        ``opening`` or ``closing`` state until the window expires.  Any
-        definitive final status (``STATUS_CLOSED`` / ``STATUS_VENTILATION``)
-        cancels the window immediately and applies the real device state.
+        During the motion window (``_motion_state`` is set), GATT notifications
+        are handled differently depending on direction:
 
-        ``STATUS_OPEN`` outside the motion window maps to ``None`` (unknown)
+        - **OPENING window**: all notifications are suppressed.  The device
+          reports ``STATUS_CLOSED`` (its current position) before the shutter
+          actually starts moving; accepting that would cancel the window and
+          revert the state to ``closed`` immediately.
+        - **CLOSING window**: ``STATUS_OPEN`` is suppressed (shutter still
+          travelling).  ``STATUS_CLOSED`` / ``STATUS_VENTILATION`` cancel the
+          window early and apply the confirmed final state.
+
+        ``STATUS_OPEN`` outside any motion window maps to ``None`` (unknown)
         **except** when the OPENING window has just expired naturally, in which
         case the shutter is considered fully open and ``CoverState.OPEN`` is used.
 
@@ -176,10 +181,14 @@ class LixilShutterCover(CoverEntity):
             status: One of STATUS_OPEN, STATUS_CLOSED, STATUS_VENTILATION, STATUS_UNKNOWN.
         """
         if self._motion_state is not None:
-            if status == STATUS_OPEN:
-                # Device not yet at final state; keep displaying the motion state.
+            if self._motion_state == CoverState.OPENING:
+                # Suppress all notifications during an opening motion: the device
+                # may report STATUS_CLOSED before it starts moving.
                 return
-            # Definitive final state arrived — cancel the window and apply it.
+            # CLOSING window: suppress STATUS_OPEN; accept definitive closed state.
+            if status == STATUS_OPEN:
+                return
+            # STATUS_CLOSED / STATUS_VENTILATION arrived — shutter reached final state.
             self._cancel_motion_state()
         if status == STATUS_OPEN:
             if self._after_opening_window:
