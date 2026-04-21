@@ -128,7 +128,7 @@ Each decision is documented with:
 
 ---
 
-### Motion Window: Optimistic Opening/Closing State After Commands
+### Motion Timer: Optimistic Opening/Closing State After Commands
 
 **Date:** 2026-04-10
 
@@ -136,18 +136,19 @@ Each decision is documented with:
 
 Additionally, when the user stops the shutter mid-travel the device reports `STATUS_OPEN`, causing HA to show state `open` — which disables the "open" button and prevents the user from reopening a partially closed shutter.
 
-> **Device limitation:** Because `STATUS_OPEN` is returned for every non-fully-closed position (fully open, halfway, stopped mid-travel), this integration cannot distinguish "fully open" from "partially open" from BLE notifications alone.  Therefore, `STATUS_OPEN` is mapped to `None` (unknown state in HA) in all cases **except** after the open motion window expires naturally.  Only when the open command has been running uninterrupted for at least `command_monitor` seconds (without a stop command) is the incoming `STATUS_OPEN` treated as `CoverState.OPEN` (fully open).
+> **Device limitation:** Because `STATUS_OPEN` is returned for every non-fully-closed position (fully open, halfway, stopped mid-travel), this integration cannot distinguish "fully open" from "partially open" from BLE notifications alone.  Therefore, `STATUS_OPEN` is mapped to `None` (unknown state in HA) in all cases **except** after the open motion timer expires naturally.  Only when the open command has been running uninterrupted for at least `command_monitor` seconds (without a stop command) is the incoming `STATUS_OPEN` treated as `CoverState.OPEN` (fully open).
 
-**Decision:** Introduce a *motion window* driven by `CONF_COMMAND_MONITOR` (default 30 s):
+**Decision:** Introduce a *motion timer* driven by `CONF_COMMAND_MONITOR` (default 30 s):
 
-- After a successful **open** command: keep state at `opening` for `command_monitor` seconds. `STATUS_OPEN` notifications are ignored inside the window; `STATUS_CLOSED` / `STATUS_VENTILATION` cancel it immediately.
-- After a successful **close** command: same mechanism, state stays at `closing`.
-- After a successful **stop** command: cancel the motion window, immediately set state to ``None`` (unknown/partial position). Both open and close buttons remain available via ``assumed_state = True``.
+- **open** command: set state to `opening` and start the window before sending the BLE command. All GATT notifications are suppressed inside the window; the window expires naturally after `command_monitor` seconds. If the BLE command fails the window is cancelled at once.
+- **close** command: set state to `closing` and start the window before sending. `STATUS_OPEN` notifications are suppressed; `STATUS_CLOSED` / `STATUS_VENTILATION` cancel the window early and apply the confirmed state.
+- **stop** command: cancel any active window and immediately set state to `None` (unknown/partial position) before sending. Both open and close buttons remain available via `assumed_state = True`.
 - `_attr_assumed_state = True` is set so HA always renders both the open and close buttons regardless of the current state.
 
 **Rationale:**
 
-- The device cannot report a percentage position — only `STATUS_OPEN` / `STATUS_CLOSED` / `STATUS_VENTILATION`. A motion window is the only way to give users useful in-progress feedback.
+- The device cannot report a percentage position — only `STATUS_OPEN` / `STATUS_CLOSED` / `STATUS_VENTILATION`. Because `STATUS_OPEN` covers every non-fully-closed state, a motion timer is the only way to give users useful in-progress feedback.
+- During an OPENING window all notifications are suppressed (not just `STATUS_OPEN`) because the device reports `STATUS_CLOSED` — its current physical position — before the shutter actually starts moving.  Accepting that notification would cancel the window and revert the state to `closed` immediately.  No such ambiguity exists for the CLOSING window: `STATUS_CLOSED` there genuinely means the shutter has arrived at the closed position.
 - `command_monitor` already controls the BLE idle-disconnect timeout, so it is a natural proxy for "time the shutter takes to complete a full motion". Reusing it avoids introducing a separate config key.
 - Setting state to `None` (unknown) on stop and on `STATUS_OPEN` outside the open window accurately reflects that the shutter is at an indeterminate position.
 - `assumed_state = True` matches the HA semantic: the integration cannot confirm the exact position, so both actions must always be available.
@@ -156,8 +157,8 @@ Additionally, when the user stops the shutter mid-travel the device reports `STA
 
 - Users must configure `command_monitor` to roughly match their shutter's full-travel time. If set too short, HA will revert to unknown state before the motion is complete; if set too long, the state stays `opening` / `closing` after the shutter has already finished.
 - If the device completes motion and sends `STATUS_CLOSED` before the window expires, the window is cancelled and the real state is applied immediately — no lag.
-- After the window expires, `async_update()` is automatically called to confirm the final device state over BLE.
-- `STATUS_OPEN` maps to `CoverState.OPEN` (fully open) **only** after the OPENING window expires naturally. In all other cases — initial poll, post-stop poll, mid-travel poll — `STATUS_OPEN` maps to `None` (unknown state).
+- After the timer expires, `async_update()` is automatically called to confirm the final device state over BLE.
+- `STATUS_OPEN` maps to `CoverState.OPEN` (fully open) **only** after the OPENING timer expires naturally. In all other cases — initial poll, post-stop poll, mid-travel poll — `STATUS_OPEN` maps to `None` (unknown state).
 
 ---
 
