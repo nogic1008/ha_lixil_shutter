@@ -136,9 +136,9 @@ Each decision is documented with:
 
 Additionally, when the user stops the shutter mid-travel the device reports `STATUS_OPEN`, causing HA to show state `open` — which disables the "open" button and prevents the user from reopening a partially closed shutter.
 
-> **Device limitation:** Because `STATUS_OPEN` is returned for every non-fully-closed position (fully open, halfway, stopped mid-travel), this integration cannot distinguish "fully open" from "partially open" from BLE notifications alone.  Therefore, `STATUS_OPEN` is mapped to `None` (unknown state in HA) in all cases **except** after the open motion timer expires naturally.  Only when the open command has been running uninterrupted for at least `command_monitor` seconds (without a stop command) is the incoming `STATUS_OPEN` treated as `CoverState.OPEN` (fully open).
+> **Device limitation:** Because `STATUS_OPEN` is returned for every non-fully-closed position (fully open, halfway, stopped mid-travel), this integration cannot distinguish "fully open" from "partially open" from BLE notifications alone. Therefore, `STATUS_OPEN` is mapped to `None` (unknown state in HA) in all cases **except** after the open motion timer expires naturally. Only when the open command has been running uninterrupted for at least `command_monitor` seconds (without a stop command) is the incoming `STATUS_OPEN` treated as `CoverState.OPEN` (fully open).
 
-**Decision:** Introduce a *motion timer* driven by `CONF_COMMAND_MONITOR` (default 30 s):
+**Decision:** Introduce a _motion timer_ driven by `CONF_COMMAND_MONITOR` (default 30 s):
 
 - **open** command: set state to `opening` and start the window before sending the BLE command. All GATT notifications are suppressed inside the window; the window expires naturally after `command_monitor` seconds. If the BLE command fails the window is cancelled at once.
 - **close** command: set state to `closing` and start the window before sending. `STATUS_OPEN` notifications are suppressed; `STATUS_CLOSED` / `STATUS_VENTILATION` cancel the window early and apply the confirmed state.
@@ -148,7 +148,7 @@ Additionally, when the user stops the shutter mid-travel the device reports `STA
 **Rationale:**
 
 - The device cannot report a percentage position — only `STATUS_OPEN` / `STATUS_CLOSED` / `STATUS_VENTILATION`. Because `STATUS_OPEN` covers every non-fully-closed state, a motion timer is the only way to give users useful in-progress feedback.
-- During an OPENING window all notifications are suppressed (not just `STATUS_OPEN`) because the device reports `STATUS_CLOSED` — its current physical position — before the shutter actually starts moving.  Accepting that notification would cancel the window and revert the state to `closed` immediately.  No such ambiguity exists for the CLOSING window: `STATUS_CLOSED` there genuinely means the shutter has arrived at the closed position.
+- During an OPENING window all notifications are suppressed (not just `STATUS_OPEN`) because the device reports `STATUS_CLOSED` — its current physical position — before the shutter actually starts moving. Accepting that notification would cancel the window and revert the state to `closed` immediately. No such ambiguity exists for the CLOSING window: `STATUS_CLOSED` there genuinely means the shutter has arrived at the closed position.
 - `command_monitor` already controls the BLE idle-disconnect timeout, so it is a natural proxy for "time the shutter takes to complete a full motion". Reusing it avoids introducing a separate config key.
 - Setting state to `None` (unknown) on stop and on `STATUS_OPEN` outside the open window accurately reflects that the shutter is at an indeterminate position.
 - `assumed_state = True` matches the HA semantic: the integration cannot confirm the exact position, so both actions must always be available.
@@ -179,7 +179,6 @@ Current architecture creates one config entry per shutter. HA's Bluetooth integr
 ## Decision Review
 
 These decisions should be reviewed when major features are added or when Home Assistant's Bluetooth integration patterns evolve significantly.
-
 
 **Consequences:**
 

@@ -406,7 +406,7 @@ See `.github/instructions/python.instructions.md` for linter overrides and error
 
 - You may use `# noqa: CODE` or `# type: ignore` when genuinely necessary
 - Use sparingly and only with good reason (e.g., false positives, external library issues)
-See `.github/instructions/python.instructions.md` for linter overrides and error recovery strategies.
+  See `.github/instructions/python.instructions.md` for linter overrides and error recovery strategies.
 
 ### Error Recovery Strategy
 

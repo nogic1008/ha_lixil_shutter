@@ -1,6 +1,4 @@
 {
   "recommendations": [],
-  "unwantedRecommendations": [
-    "ms-python.pylint"
-  ]
+  "unwantedRecommendations": ["ms-python.pylint"]
 }

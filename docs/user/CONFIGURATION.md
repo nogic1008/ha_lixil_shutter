@@ -10,10 +10,10 @@ No credentials are required. The config flow only asks you to confirm the detect
 
 Information shown during setup:
 
-| Field | Description |
-| ----- | ----------- |
-| **Name** | Device name from the BLE advertisement |
-| **Address** | Bluetooth address of the shutter |
+| Field            | Description                                               |
+| ---------------- | --------------------------------------------------------- |
+| **Name**         | Device name from the BLE advertisement                    |
+| **Address**      | Bluetooth address of the shutter                          |
 | **Product Type** | Detected product type (e.g., `ShutterItalia`, `Sunshade`) |
 
 ### Options Flow (Post-Setup Configuration)
@@ -28,10 +28,10 @@ After initial setup, you can adjust connection behaviour:
 
 **Available options:**
 
-| Option | Default | Description |
-| ------ | ------- | ----------- |
-| **Poll Interval** | 300 s | How often Home Assistant requests the shutter state over BLE. Increase to reduce BLE traffic; decrease for more responsive state updates. |
-| **Command Monitor Window** | 30 s | How long the BLE connection stays open after sending a command. This allows the device's completion notification to arrive before the connection is dropped. |
+| Option                     | Default | Description                                                                                                                                                  |
+| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Poll Interval**          | 300 s   | How often Home Assistant requests the shutter state over BLE. Increase to reduce BLE traffic; decrease for more responsive state updates.                    |
+| **Command Monitor Window** | 30 s    | How long the BLE connection stays open after sending a command. This allows the device's completion notification to arrive before the connection is dropped. |
 
 Changes take effect immediately without restarting Home Assistant — the cover entity reschedules its poll timer automatically.
 
@@ -45,29 +45,29 @@ One `cover` entity is created per configured shutter.
 
 **Supported actions:**
 
-| Action | All models | Ventilation models only |
-| ------ | ---------- | ----------------------- |
-| Open | ✅ | — |
-| Close | ✅ | — |
-| Stop | ✅ | — |
-| Open Tilt (採風) | — | ✅ |
-| Close Tilt | — | ✅ |
+| Action           | All models | Ventilation models only |
+| ---------------- | ---------- | ----------------------- |
+| Open             | ✅         | —                       |
+| Close            | ✅         | —                       |
+| Stop             | ✅         | —                       |
+| Open Tilt (採風) | —          | ✅                      |
+| Close Tilt       | —          | ✅                      |
 
 Ventilation models: ShutterItalia, Sunshade, Skylight, Screen, ACAdapter, InHouseGarage.
 Non-ventilation models: DecorativeWindow, ShutterEaris.
 
 **Extra state attributes:**
 
-| Attribute | Description |
-| --------- | ----------- |
-| `ble_address` | Bluetooth address of the device |
-| `product_type` | Detected product type string |
+| Attribute      | Description                     |
+| -------------- | ------------------------------- |
+| `ble_address`  | Bluetooth address of the device |
+| `product_type` | Detected product type string    |
 
 **Tilt position values (ventilation models only):**
 
-| Value | Meaning |
-| ----- | ------- |
-| `0` | Flap slats closed |
+| Value | Meaning                                       |
+| ----- | --------------------------------------------- |
+| `0`   | Flap slats closed                             |
 | `100` | Flap slats open (ventilation / 採風 position) |
 
 ### Entity Customization
@@ -99,11 +99,11 @@ The BLE connection is on-demand: it connects when a poll or command is issued an
 
 ### Tuning Polling
 
-| Use Case | Recommended Poll Interval |
-| -------- | ------------------------- |
-| Rarely use physical remote | 10–30 minutes (600–1800 s) |
-| Sometimes use physical remote | 5 minutes (300 s, default) |
-| Frequently use physical remote | 1–2 minutes (60–120 s) |
+| Use Case                       | Recommended Poll Interval  |
+| ------------------------------ | -------------------------- |
+| Rarely use physical remote     | 10–30 minutes (600–1800 s) |
+| Sometimes use physical remote  | 5 minutes (300 s, default) |
+| Frequently use physical remote | 1–2 minutes (60–120 s)     |
 
 ## Diagnostic Data
 
@@ -132,14 +132,17 @@ Diagnostic data includes:
           max: 100
 
 trigger:
-  - trigger: numeric_state
-    entity_id: !input sensor_entity
-    above: !input threshold
+
+- trigger: numeric_state
+  entity_id: !input sensor_entity
+  above: !input threshold
 
 action:
-  - action: notify.notify
-    data:
-      message: "Sensor exceeded threshold!"
+
+- action: notify.notify
+  data:
+  message: "Sensor exceeded threshold!"
+
 ```
 
 ## Configuration Examples
@@ -171,3 +174,4 @@ If configuration changes aren't persisted:
 - [Getting Started](./GETTING_STARTED.md) - Installation and initial setup
 - [Examples](./EXAMPLES.md) - Automation and dashboard examples
 - [GitHub Issues](https://github.com/nogic1008/ha_lixil_shutter/issues) - Report problems
+```

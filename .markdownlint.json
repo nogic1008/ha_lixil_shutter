@@ -6,14 +6,7 @@
   "MD041": false,
   "no-trailing-punctuation": false,
   "no-inline-html": {
-    "allowed_elements": [
-      "br",
-      "details",
-      "summary",
-      "img",
-      "a",
-      "kbd"
-    ]
+    "allowed_elements": ["br", "details", "summary", "img", "a", "kbd"]
   },
   "code-block-style": {
     "style": "fenced"

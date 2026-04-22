@@ -80,12 +80,10 @@ Create a new ADR in `docs/development/adr/NNNN-title-of-decision.md`:
 **Consequences:**
 
 - **Positive:**
-
   - [Positive outcome 1]
   - [Positive outcome 2]
 
 - **Negative:**
-
   - [Negative outcome 1 and how we'll mitigate]
   - [Negative outcome 2 and how we'll mitigate]
 
