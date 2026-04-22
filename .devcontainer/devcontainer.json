@@ -39,7 +39,7 @@
         "charliermarsh.ruff",
         "davidanson.vscode-markdownlint",
         "EditorConfig.EditorConfig",
-        "esbenp.prettier-vscode",
+        "oxc.oxc-vscode",
         "GitHub.copilot",
         "github.vscode-pull-request-github",
         "ms-python.python",
@@ -92,19 +92,19 @@
           }
         },
         "[yaml]": {
-          "editor.defaultFormatter": "esbenp.prettier-vscode",
+          "editor.defaultFormatter": "oxc.oxc-vscode",
           "editor.formatOnSave": true
         },
         "[json]": {
-          "editor.defaultFormatter": "esbenp.prettier-vscode",
+          "editor.defaultFormatter": "oxc.oxc-vscode",
           "editor.formatOnSave": true
         },
         "[jsonc]": {
-          "editor.defaultFormatter": "esbenp.prettier-vscode",
+          "editor.defaultFormatter": "oxc.oxc-vscode",
           "editor.formatOnSave": true
         },
         "[jsontranslation]": {
-          "editor.defaultFormatter": "esbenp.prettier-vscode",
+          "editor.defaultFormatter": "oxc.oxc-vscode",
           "editor.formatOnSave": false
         },
         "json.schemas": [
