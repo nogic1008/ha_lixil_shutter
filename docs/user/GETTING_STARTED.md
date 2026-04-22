@@ -178,4 +178,3 @@ Add this to `configuration.yaml`, restart Home Assistant, and reproduce the issu
 
 - [GitHub Discussions](https://github.com/nogic1008/ha_lixil_shutter/discussions)
 - [Home Assistant Community Forum](https://community.home-assistant.io/)
-

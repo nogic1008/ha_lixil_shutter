@@ -30,9 +30,9 @@ Uncomment and customize these badges if you want to use them:
 
 **This integration will set up the following platform.**
 
-Platform | Description
--- | --
-`cover` | Shutter device — open, close, stop, and tilt (ventilation models only)
+| Platform | Description                                                            |
+| -------- | ---------------------------------------------------------------------- |
+| `cover`  | Shutter device — open, close, stop, and tilt (ventilation models only) |
 
 ## 🚀 Quick Start
 
@@ -118,10 +118,10 @@ The tilt feature is automatically enabled or disabled based on the detected prod
 
 **Extra state attributes:**
 
-Attribute | Description
--- | --
-`ble_address` | Bluetooth address of the device
-`product_type` | Detected product type (e.g., `ShutterItalia`, `Sunshade`)
+| Attribute      | Description                                               |
+| -------------- | --------------------------------------------------------- |
+| `ble_address`  | Bluetooth address of the device                           |
+| `product_type` | Detected product type (e.g., `ShutterItalia`, `Sunshade`) |
 
 ## Configuration Options
 
@@ -133,10 +133,10 @@ No credentials are required. The setup wizard shows the detected device and asks
 
 You can change these anytime by clicking **Configure**:
 
-Name | Default | Description
--- | -- | --
-Poll Interval | 300 s (5 min) | How often HA polls the shutter for its current state
-Command Monitor Window | 30 s | How long the BLE connection stays open after a command (to receive the completion notification)
+| Name                   | Default       | Description                                                                                     |
+| ---------------------- | ------------- | ----------------------------------------------------------------------------------------------- |
+| Poll Interval          | 300 s (5 min) | How often HA polls the shutter for its current state                                            |
+| Command Monitor Window | 30 s          | How long the BLE connection stays open after a command (to receive the completion notification) |
 
 ## Troubleshooting
 
