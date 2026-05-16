@@ -63,7 +63,7 @@ custom_components/lixil_shutter/
 - Updates state optimistically on commands; confirmed via GATT notification
 - `_attr_assumed_state = True`: both open and close buttons are always shown regardless of state, because the shutter reports only `STATUS_OPEN` / `STATUS_CLOSED` and cannot report partial positions
 
-> **Device limitation:** The shutter reports `STATUS_OPEN` for every non-fully-closed position (fully open, halfway, stopped mid-travel).  As a result, `STATUS_OPEN` is mapped to `None` (unknown state) in all cases except after the OPENING motion timer expires naturally.  `CoverState.OPEN` (fully open) is only applied when the open command has been running uninterrupted for at least `command_monitor` seconds without a stop command being issued.  It is not possible to distinguish "fully open" from "partially open" via BLE notifications alone.
+> **Device limitation:** The shutter reports `STATUS_OPEN` for every non-fully-closed position (fully open, halfway, stopped mid-travel). As a result, `STATUS_OPEN` is mapped to `None` (unknown state) in all cases except after the OPENING motion timer expires naturally. `CoverState.OPEN` (fully open) is only applied when the open command has been running uninterrupted for at least `command_monitor` seconds without a stop command being issued. It is not possible to distinguish "fully open" from "partially open" via BLE notifications alone.
 
 **Motion timer** (`CONF_COMMAND_MONITOR`):
 
@@ -78,13 +78,13 @@ If the BLE command fails the timer is cancelled immediately. On stop, state is s
 
 **Supported features:**
 
-| Feature | All models | Ventilation models |
-| ------- | ---------- | ------------------ |
-| OPEN | ✅ | ✅ |
-| CLOSE | ✅ | ✅ |
-| STOP | ✅ | ✅ |
-| OPEN_TILT | — | ✅ |
-| CLOSE_TILT | — | ✅ |
+| Feature    | All models | Ventilation models |
+| ---------- | ---------- | ------------------ |
+| OPEN       | ✅         | ✅                 |
+| CLOSE      | ✅         | ✅                 |
+| STOP       | ✅         | ✅                 |
+| OPEN_TILT  | —          | ✅                 |
+| CLOSE_TILT | —          | ✅                 |
 
 Ventilation models: types 2–7 (ShutterItalia, Sunshade, Skylight, Screen, ACAdapter, InHouseGarage).
 
@@ -173,4 +173,3 @@ Core dependencies (see `manifest.json`):
 - `dbus-fast` — BlueZ D-Bus pairing for local adapters (transitive HA dependency)
 
 Development dependencies: see `requirements_dev.txt` and `requirements_test.txt`.
-

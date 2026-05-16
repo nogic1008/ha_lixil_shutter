@@ -1,0 +1,36 @@
+{
+  "printWidth": 120,
+  "semi": true,
+  "singleQuote": false,
+  "quoteProps": "as-needed",
+  "trailingComma": "es5",
+  "bracketSpacing": true,
+  "arrowParens": "always",
+  "proseWrap": "preserve",
+  "ignorePatterns": [
+    "config/",
+    "!config/configuration.yaml",
+    "custom_components/",
+    "!custom_components/lixil_shutter/"
+  ],
+  "overrides": [
+    {
+      "files": ["**/*.md"],
+      "options": {
+        "proseWrap": "preserve"
+      }
+    },
+    {
+      "files": ["**/*.json", "**/*.jsonc"],
+      "options": {
+        "trailingComma": "none"
+      }
+    },
+    {
+      "files": ["**/*.toml"],
+      "options": {
+        "tabWidth": 4
+      }
+    }
+  ]
+}

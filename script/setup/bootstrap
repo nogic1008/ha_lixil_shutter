@@ -118,6 +118,9 @@ if [[ "$VENV_IS_EXTERNAL" == "true" ]]; then
     set -e
 fi
 
+log_header "Installing oxfmt (JavaScript/JSON/YAML/Markdown formatter)"
+npm install -g oxfmt
+
 log_header "Installing development dependencies"
 uv pip install --requirement requirements_dev.txt
 

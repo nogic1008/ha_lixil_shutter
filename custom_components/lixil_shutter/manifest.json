@@ -6,9 +6,7 @@
       "service_uuid": "2141e110-213a-11e6-b67b-9e71128cae77"
     }
   ],
-  "codeowners": [
-    "@nogic1008"
-  ],
+  "codeowners": ["@nogic1008"],
   "config_flow": true,
   "dependencies": ["bluetooth"],
   "documentation": "https://github.com/nogic1008/ha_lixil_shutter",
