@@ -1,6 +1,16 @@
 ---
 agent: "agent"
-tools: ["search/codebase", "search", "read/problems", "execute/getTerminalOutput", "execute/runInTerminal", "read/terminalLastCommand", "read/terminalSelection", "read/terminalLastCommand"]
+tools:
+  [
+    "search/codebase",
+    "search",
+    "read/problems",
+    "execute/getTerminalOutput",
+    "execute/runInTerminal",
+    "read/terminalLastCommand",
+    "read/terminalSelection",
+    "read/terminalLastCommand",
+  ]
 description: "Diagnose and fix data update coordinator problems like stale data or unavailable entities"
 ---
 

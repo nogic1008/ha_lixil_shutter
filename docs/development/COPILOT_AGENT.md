@@ -51,7 +51,7 @@ The blueprint has example entities - remove what's not needed, keep and adapt wh
 
 ### Example: Smart Thermostat
 
-```markdown
+````markdown
 This is a fresh Home Assistant integration blueprint. Transform it for MyDevice Smart Thermostat.
 
 High-level: Smart thermostat that controls temperature via REST API. Reads current
@@ -64,6 +64,7 @@ API Details:
 - Auth: API key in X-API-Key header
 
 Example API response from /status:
+
 ```json
 {
   "temp": { "current": 21.5, "target": 22.0 },
@@ -72,6 +73,7 @@ Example API response from /status:
   "state": "heating"
 }
 ```
+````
 
 Tasks:
 
@@ -86,6 +88,7 @@ Tasks:
 9. Run script/check to validate
 
 The blueprint has example entities - remove what's not needed, keep and adapt what makes sense.
+
 ```
 
 Let the Copilot Agent analyze the blueprint and determine the best structure.
@@ -129,3 +132,4 @@ For detailed Codespaces usage, troubleshooting, and resource management, see [CO
 
 - [GitHub Copilot Best Practices](https://docs.github.com/en/copilot/tutorials/coding-agent/get-the-best-results)
 - `AGENTS.md` and `.github/copilot-instructions.md` - Instructions Copilot reads automatically
+```
