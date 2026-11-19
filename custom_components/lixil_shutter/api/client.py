@@ -22,8 +22,9 @@ establish_connection.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from typing import cast
 
 from bleak import BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic
@@ -198,21 +199,33 @@ class LixilShutterBleClient:
             except Exception as start_exc:
                 exc_str = str(start_exc)
                 if "Insufficient authentication" in exc_str:
-                    # BLE peripheral is requesting encryption/bonding (error=5).
-                    # The correct BLE flow is to initiate SMP pairing on this
-                    # active connection (not a separate one) while the device is
-                    # already waiting for the security request.  After pair()
-                    # the link is encrypted and start_notify will succeed.
-                    LOGGER.debug(
-                        "[connect] Insufficient authentication for %s — initiating pair() on active connection",
-                        self.address,
-                    )
-                    await self._client.pair()
-                    LOGGER.debug(
-                        "[connect] pair() completed for %s, retrying start_notify",
-                        self.address,
-                    )
-                    await self._client.start_notify(CHAR_UCG_IN_UUID, self._on_notification)
+                    if not is_local_bluez_device(self._ble_device):
+                        LOGGER.debug(
+                            "[connect] Insufficient authentication for %s — initiating proxy pair()",
+                            self.address,
+                        )
+                        await self._client.pair()
+                        LOGGER.debug(
+                            "[connect] proxy pair() completed for %s, retrying start_notify",
+                            self.address,
+                        )
+                        await self._client.start_notify(CHAR_UCG_IN_UUID, self._on_notification)
+                    else:
+                        # BLE peripheral is requesting encryption/bonding (error=5).
+                        # The correct BLE flow is to initiate SMP pairing on this
+                        # active connection (not a separate one) while the device is
+                        # already waiting for the security request.  After pair()
+                        # the link is encrypted and start_notify will succeed.
+                        LOGGER.debug(
+                            "[connect] Insufficient authentication for %s — initiating pair() on active connection",
+                            self.address,
+                        )
+                        await self._client.pair()
+                        LOGGER.debug(
+                            "[connect] pair() completed for %s, retrying start_notify",
+                            self.address,
+                        )
+                        await self._client.start_notify(CHAR_UCG_IN_UUID, self._on_notification)
                 elif "NotPermitted" not in exc_str or "Notify acquired" not in exc_str:
                     raise
                 else:
@@ -500,6 +513,17 @@ class LixilShutterBleClient:
                 self._ble_device,
                 self._ble_device.address,
             )
+            LOGGER.debug("[do_pairing] proxy: clearing stale bond/cache for %s", self.address)
+            unpair = getattr(client, "unpair", None)
+            if callable(unpair):
+                unpair_callable = cast(Callable[[], Awaitable[object]], unpair)
+                with suppress(Exception):
+                    await unpair_callable()
+            clear_cache = getattr(client, "clear_cache", None)
+            if callable(clear_cache):
+                clear_cache_callable = cast(Callable[[], Awaitable[object]], clear_cache)
+                with suppress(Exception):
+                    await clear_cache_callable()
             LOGGER.debug(
                 "[do_pairing] proxy: calling pair() on %s to initiate SMP bonding",
                 self.address,
