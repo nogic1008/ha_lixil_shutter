@@ -41,21 +41,24 @@ Uncomment and customize these badges if you want to use them:
 **Prerequisites:**
 
 - Home Assistant with Bluetooth capability (built-in adapter or [ESPHome Bluetooth Proxy](https://esphome.io/components/bluetooth_proxy))
-- [HACS](https://hacs.xyz/) (Home Assistant Community Store) installed
+- [HACS](https://hacs.xyz/) (Home Assistant Community Store) installed (for Home Assistant versions older than 2026.11)
 
 Click the button below to open the integration directly in HACS:
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=nogic1008&repository=ha_lixil_shutter&category=integration)
+[![Open your Home Assistant instance and open this repository in the Marketplace.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=nogic1008&repository=ha_lixil_shutter&category=integration)
 
 Then:
 
 1. Click "Download" to install the integration
-2. **Restart Home Assistant** (required after installation)
+2. With HACS (before Home Assistant 2026.11), **restart Home Assistant**. The Marketplace loads it right away.
+
+> [!NOTE]
+> The My Home Assistant redirect will first take you to a landing page. Click the button there to open your Home Assistant instance.
 
 <details>
 <summary>**Manual Installation (Advanced)**</summary>
 
-If you prefer not to use HACS:
+If you prefer not to use the Marketplace or HACS:
 
 1. Download the `custom_components/lixil_shutter/` folder from this repository
 2. Copy it to your Home Assistant's `custom_components/` directory
@@ -226,8 +229,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 [commits-shield]: https://img.shields.io/github/commit-activity/y/nogic1008/ha_lixil_shutter.svg?style=for-the-badge
 [commits]: https://github.com/nogic1008/ha_lixil_shutter/commits/main
-[hacs]: https://github.com/hacs/integration
-[hacsbadge]: https://img.shields.io/badge/HACS-Default-orange.svg?style=for-the-badge
+[hacs]: https://www.hacs.xyz/docs/marketplace/
+[hacsbadge]: https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge
 [license-shield]: https://img.shields.io/github/license/nogic1008/ha_lixil_shutter.svg?style=for-the-badge
 [maintenance-shield]: https://img.shields.io/badge/maintainer-%40nogic1008-blue.svg?style=for-the-badge
 [releases-shield]: https://img.shields.io/github/release/nogic1008/ha_lixil_shutter.svg?style=for-the-badge

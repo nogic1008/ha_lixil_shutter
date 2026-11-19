@@ -6,6 +6,7 @@
       "service_uuid": "2141e110-213a-11e6-b67b-9e71128cae77"
     }
   ],
+  "categories": ["blinds_curtains"],
   "codeowners": ["@nogic1008"],
   "config_flow": true,
   "dependencies": ["bluetooth"],
@@ -14,5 +15,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/nogic1008/ha_lixil_shutter/issues",
   "requirements": [],
-  "version": "0.2.2"
+  "version": "0.2.3"
 }
